@@ -16,9 +16,9 @@ var _ = require('underscore');
 // ['float-threshold', low, zero, high, min, min-thresh, max-thresh, max]
 // ['ordinal', count]
 //
-var red = 'rgb(255, 0, 0)';
-var white = 'rgb(255, 255, 255)';
-var blue = 'rgb(0, 0, 255)';
+var red = '#ff0000';
+var white = '#ffffff';
+var blue = '#0000ff';
 
 describe('heatmapColors', function () {
 	describe('#colorScale', function () {
@@ -135,8 +135,8 @@ describe('heatmapColors', function () {
 				column = {fieldType: 'probes', colorClass: 'expression'},
 				settings1 = {
 					min: -12,
-					minStart: -11,
-					maxStart: 6,
+					minstart: -11,
+					maxstart: 6,
 					max: 7
 				},
 				settings2 = {

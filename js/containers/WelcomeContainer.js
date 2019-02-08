@@ -7,28 +7,25 @@ var Welcome = require('../views/Welcome');
 var {rxEvents} = require('../react-utils');
 
 var links = [
-	['heatmap', 'fff0ba742442246f0fd600d41d163d60',
+	['heatmap', 'bc7f3f46b042bcf5c099439c2816ff01',
 		'FOXM1a, FOXM1b, FOXM1c transcript expression in tumor vs. normal samples'],
-	['heatmap', 'e1649cf9068043e626d7edb5a2203479',
-		'Mutation pile-ups in intron enhancers in ICGC lymphoma'],
-	['heatmap', 'ffa03ad3926c4799269715288eacba97',
-		'KM plot (overall survival) of breast cancer PAM50 subtypes'],
-	['heatmap', '1529e36190e1107c4716b9888bd3324a',
-		'Copy number for EGFR, PTEN, chromosome 1, 7, 10, 19 in TCGA brain tumors'],
-	['heatmap', 'e5080f15c2715bc027a9a7b63c18ccf9',
-		'PDL1 and PD1 expression across 39 cancer types in TCGA and TARGET'],
-	['heatmap', '4581843a2f792aa8f215964d0d756896',
+	['heatmap', 'cd6d8adead7d720fea7df197dc807147',
 		'ERG-TMPRSS2 fusion by chr21 deletion in prostate cancer'],
-	['heatmap', 'e5cdbea6320c823004772c0eaced3924',
-		'TERT, ATRX, TP53 in lower grade glioma. Two pathways to telomere lengthening'],
-	['heatmap', 'bb15f97f0e0dc0fad854582d59f1d13b',
-		'Co-deletion of chromosome 1p and 19q in TCGA lower grade gliomas'],
-	['heatmap', 'eae46203a94f4b3904c2c9130789372d',
-		'Genetic separation of lower grade gliomas into two disease entities: \
-		one characterized by loss of chromosome arms 1p and 19q and TERT over-expresssion, \
-		the other by TP53 and ATRX mutations.'],
+	['heatmap', 'e617e2f31b2a02690e80f4b6acc55ff3',
+		'KM plot (overall survival) of breast cancer PAM50 subtypes'],
+	['heatmap', '937469da6dfa9171cd255884b53cb75e',
+		'Genetic separation of lower grade gliomas: one characterized by loss of chromosomes 1p & 19q, \
+		the other by TP53 & ATRX mutations.'],
+	['heatmap', '3f4b3fa8901f4c24f5f791e036566424',
+		'PDL1 and PD1 expression across 39 cancer types in TCGA and TARGET'],
+	['heatmap', '05690ede046dc7b9f98ea78d1cbc5c2e',
+		'MGMT promoter DNA methylation is inversely correlated with MGMT expression'],
+	['heatmap', '8772bbc8f47c5cda31e4737c7f88444d',
+		'Copy number for EGFR, PTEN, chromosome 1, 7, 10, 19 in TCGA brain tumors'],
 	['transcripts', '25a9782db8c1166ce7bae6686e98124c',
-		'KRAS isoform expression in TCGA pancreatic cancer vs. GTEx pancreas normal']];
+		'KRAS isoform expression in TCGA pancreatic cancer vs. GTEx pancreas normal'],
+	['heatmap', 'b62b660e6029947f51ce5745945cce90',
+		'Mutation pile-ups in intron enhancers in ICGC lymphoma']];
 
 
 var evToIndex = ev => parseInt(ev.currentTarget.dataset.index, 10);

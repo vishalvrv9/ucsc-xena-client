@@ -5,20 +5,27 @@ import { AppControls } from './AppControls';
 import { KmPlot } from './KmPlot';
 import StateError from'./StateError';
 import _  from './underscore_ext';
-import { signatureField } from './models/fieldSpec';
-import { getColSpec } from './models/datasetJoins';
-import { SampleSearch } from './views/SampleSearch';
 import { Stepper } from './views/Stepper';
 import Welcome from './containers/WelcomeContainer';
-import uuid from './uuid';
 import '../css/index.css'; // Root styles file (reset, fonts, globals)
 import { ThemeProvider } from 'react-css-themr';
 import appTheme from './appTheme';
 import nav from './nav';
 //var Perf = require('react/lib/ReactDefaultPerf');
 
+const stepperSteps = [
+	{ label: 'Select a Study to Explore' },
+	{ label: 'Select Your First Variable' },
+	{ label: 'Select Your Second Variable' }
+];
+const stepperStateIndex = {
+	'COHORT': 0,
+	'FIRST_COLUMN': 1,
+	'SECOND_COLUMN': 2
+};
+
 // should really be in a config file.
-const searchHelp = 'http://xena.ghost.io/highlight-filter-help/';
+const searchHelp = 'https://ucsc-xena.gitbook.io/project/overview-of-features/filter-and-subgrouping';
 
 class Application extends Component {
 //	onPerf = () => {
@@ -45,36 +52,15 @@ class Application extends Component {
 		// nested render to different DOM tree
 		nav({isPublic, getState, onImport, onNavigate, activeLink: 'heatmap'});
 	}
-	onFilter= (matches) => {
-		const {callback, state: {cohortSamples}} = this.props,
-			matching = _.map(matches, i => cohortSamples[i]);
-		callback(['sampleFilter', matching]);
-	};
-	onFilterZoom = (samples, matches) => {
-		const { state: { zoom: { height } }, callback } = this.props,
-			toOrder = _.object(samples, _.range(samples.length)),
-			index = toOrder[_.min(matches, s => toOrder[s])],
-			last = toOrder[_.max(matches, s => toOrder[s])];
-		callback(['zoom', {index, height, count: last - index + 1}]);
-	};
-	onFilterColumn= ( matches, columnLabel, fieldLabel) => {
-		const {state: {cohortSamples, sampleSearch}, callback} = this.props,
-			matching = _.map(matches, i => cohortSamples[i]),
-			field = signatureField(`${fieldLabel ? fieldLabel : sampleSearch}`, {
-				columnLabel: columnLabel ? columnLabel : 'filter',
-				valueType: 'coded',
-				filter: sampleSearch,
-				signature: ['in', matching]
-			}),
-			colSpec = getColSpec([field], []),
-			settings = _.assoc(colSpec,
-					'width', 136,
-					'user', _.pick(colSpec, ['columnLabel', 'fieldLabel']));
-		callback(['add-column', 0, {id: uuid(), settings}]);
-	};
 	onHideError = () => {
 		this.props.callback(['stateError', undefined]);
 	};
+	onShowWelcome = () => {
+		this.props.onShowWelcome(true);
+	}
+	onHideWelcome = () => {
+		this.props.onShowWelcome(false);
+	}
 //	onSearchIDAndFilterColumn = (qsamplesList) => {
 //		var {state: {samples, cohortSamples}} = this.props,
 //			qsampleListObj = {},
@@ -90,19 +76,9 @@ class Application extends Component {
 //		this.onFilterColumn(matches, 'sample list', fieldLabel);
 //	};
 	render() {
-		let {state, stateError, children, onHighlightChange, onShowWelcome, stepperState, loadPending, ...otherProps} = this.props,
-			{callback, onResetSampleFilter} = otherProps,
-			{cohort, samplesMatched, sampleSearch,
-				samples, mode, wizardMode, showWelcome, zoom} = state,
-			matches = _.get(samplesMatched, 'length', samples.length),
-			// Can these closures be eliminated, now that the selector is above this
-			// component?
-			onFilter = (matches < samples.length && matches > 0) ?
-				() => this.onFilter(samplesMatched) : null,
-			onFilterColumn = (matches < samples.length && matches > 0) ?
-				() => this.onFilterColumn(samplesMatched) : null,
-			onFilterZoom = (matches < samples.length && matches > 0) ?
-				() => this.onFilterZoom(samples, samplesMatched) : null;
+		let {state, stateError, children, stepperState, loadPending, ...otherProps} = this.props,
+			{callback} = otherProps,
+			{wizardMode, showWelcome, zoom} = state;
 //			onSearchIDAndFilterColumn = this.onSearchIDAndFilterColumn;
 
 		if (loadPending) {
@@ -112,24 +88,12 @@ class Application extends Component {
 		return (
 			<div>
 				<div style={{position: 'relative'}}> {/* Necessary for containing KmPlot pop-up */}
-					{showWelcome ? <Welcome onClick={() => onShowWelcome(false)} /> :
+					{showWelcome ? <Welcome onClick={this.onHideWelcome} /> :
 						null}
-					{wizardMode ? <Stepper mode={stepperState} /> :
+					{wizardMode ? <Stepper mode={stepperState} steps={stepperSteps} stateIndex={stepperStateIndex}/> :
 						<AppControls {...otherProps} appState={state} help={searchHelp}
-									 zoom={zoom} onShowWelcome={() => onShowWelcome(true)}>
-							<SampleSearch
-								value={sampleSearch}
-								matches={matches}
-								onFilter={onFilter}
-								onZoom={onFilterZoom}
-								onCreateColumn={onFilterColumn}
-								onChange={onHighlightChange}
-								mode={mode}
-								onResetSampleFilter={onResetSampleFilter}
-								cohort={cohort}
-								callback={callback}/>
-						</AppControls>
-							}
+									 zoom={zoom} onShowWelcome={this.onShowWelcome}/>}
+
 					<Grid onClick={this.onClick}>
 					{/*
 						<Row>
@@ -144,7 +108,9 @@ class Application extends Component {
 					</Grid>
 					{_.getIn(state, ['km', 'id']) ? <KmPlot
 							callback={callback}
-							km={state.km} /> : null}
+							survivalKeys={_.keys(state.survival)}
+							km={state.km}
+							cohort={state.cohort.name} /> : null}
 					{stateError ? <StateError onHide={this.onHideError} error={stateError}/> : null}
 				</div>
 			</div>

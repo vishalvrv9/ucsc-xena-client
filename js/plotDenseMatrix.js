@@ -51,14 +51,19 @@ var posRegionString = p => {
 	var pad = Math.round((p.chromend - p.chromstart) / 2);
 	return `${p.chrom}:${util.addCommas(p.chromstart - pad)}-${util.addCommas(p.chromend + pad)}`;
 };
-var gbURL = (assembly, pos) => {
+var gbURL = (assembly, pos, hgtCustomtext, hubUrl) => {
 	var assemblyString = encodeURIComponent(assembly),
 		positionString = encodeURIComponent(posString(pos)),
 		regionString = encodeURIComponent(posRegionString(pos));
-	return `http://genome.ucsc.edu/cgi-bin/hgTracks?db=${assemblyString}&highlight=${assemblyString}.${positionString}&position=${regionString}`;
+	return `http://genome.ucsc.edu/cgi-bin/hgTracks?db=${assemblyString}
+			&highlight=${assemblyString}.${positionString}
+			&position=${regionString}
+			${hubUrl ? `&hubUrl=${hubUrl}` : ''}
+			${hgtCustomtext ? `&hgt.customText=${hgtCustomtext}` : ''}`;
 };
 
-function tooltip(heatmap, assembly, fields, sampleFormat, fieldFormat, codes, position, width, zoom, samples, ev) {
+function tooltip(id, heatmap, avg, assembly, hgtCustomtext, hubUrl,
+	fields, sampleFormat, fieldFormat, codes, position, width, zoom, samples, ev) {
 	var coord = util.eventOffset(ev),
 		sampleIndex = bounded(0, samples.length, Math.floor((coord.y * zoom.count / zoom.height) + zoom.index)),
 		sampleID = samples[sampleIndex],
@@ -71,15 +76,16 @@ function tooltip(heatmap, assembly, fields, sampleFormat, fieldFormat, codes, po
 		label = fieldFormat(field);
 
 	val = code ? code : prec(val);
-	let mean = heatmap && prec(_.meannull(heatmap[fieldIndex])),
-		median = heatmap && prec(_.medianNull(heatmap[fieldIndex]));
+	let mean = avg && prec(avg.mean),
+		median = avg && prec(avg.median);
 	return {
 		sampleID: sampleFormat(sampleID),
+		id,
+		fieldIndex,
 		rows: [
 			[['labelValue', label, val]],
-			...(pos && assembly ? [[['url', `${assembly} ${posString(pos)}`, gbURL(assembly, pos)]]] : []),
-			...((!code && (mean !== 'NA') && (median !== 'NA') ? [[['labelValue', 'Mean (Median)', mean + ' (' +
-	         median + ')' ]]] : []))]
+			...(pos && assembly ? [[['url', `${assembly} ${posString(pos)}`, gbURL(assembly, pos, hgtCustomtext, hubUrl)]]] : []),
+			...(!code && (mean !== 'NA') && (median !== 'NA') ? [[['labelValue', 'Mean (Median)', `${mean} (${median})`]]] : [])]
 	};
 }
 
@@ -158,9 +164,9 @@ function renderFloatLegend(props) {
 var addWordBreaks = str => str.replace(/([_/])/g, '\u200B$1\u200B');
 
 function renderFloatLegendNew(props) {
-	var {units, colors, vizSettings} = props;
+	var {units, colors, data, vizSettings} = props;
 
-	if (!colors) {
+	if (_.isEmpty(data)) {
 		return null;
 	}
 
@@ -259,9 +265,14 @@ class extends PureComponent {
 	tooltip = (ev) => {
 		var {samples, data, column, zoom, sampleFormat, fieldFormat, id} = this.props,
 			codes = _.get(data, 'codes'),
-			position = _.getIn(data, ['req', 'position']),
-			{assembly, fields, heatmap, width} = column;
-		return tooltip(heatmap, assembly, fields, sampleFormat, fieldFormat(id), codes, position, width, zoom, samples, ev);
+			// support data.req.position for old bookmarks.
+			position = column.position || _.getIn(data, ['req', 'position']),
+			avg = _.get(data, 'avg'),
+			{assembly, fields, heatmap, width, dataset} = column,
+			hgtCustomtext = _.getIn(dataset, ['probemapMeta', 'hgt.customtext']),
+			hubUrl = _.getIn(dataset, ['probemapMeta', 'huburl']);
+		return tooltip(id, heatmap, avg, assembly, hgtCustomtext, hubUrl, fields, sampleFormat, fieldFormat(id),
+			codes, position, width, zoom, samples, ev);
 	};
 
 	// To reduce this set of properties, we could

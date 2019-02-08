@@ -18,12 +18,57 @@ var {chromRangeFromScreen} = require('../exonLayout');
 var parsePos = require('../parsePos');
 var {categoryMore} = require('../colorScales');
 var {publicServers} = require('../defaultServers');
-import {IconMenu, MenuItem, MenuDivider} from 'react-toolbox/lib/menu';
+import {IconMenu as RTIconMenu, MenuItem, MenuDivider} from 'react-toolbox/lib/menu';
 import Tooltip from 'react-toolbox/lib/tooltip';
 var ColCard = require('./ColCard');
 var {ChromPosition} = require('../ChromPosition');
-var {RefGeneAnnotation} = require('../refGeneExons');
+import RefGeneAnnotation from '../refGeneExons';
 import { matches } from 'static-interval-tree';
+var gaEvents = require('../gaEvents');
+var crosshair = require('./cursor.png');
+
+var ESCAPE = 27;
+
+class IconMenu extends React.Component {
+	onKeyDown = ev => {
+		if (ev.keyCode === ESCAPE) {
+			this.ref.handleMenuHide();
+		}
+	}
+	cleanup() {
+		// We get an onHide() call from setting state in Menu, *and*
+		// from this.ref.handleMenuHide(), during this.onKeyDown. So,
+		// check if 'curtain' still exists before tear down.
+		if (this.curtain) {
+			document.body.removeChild(this.curtain);
+			document.removeEventListener('keydown', this.onKeyDown);
+			delete this.curtain;
+		}
+	}
+	componentWillUnmount() {
+		this.cleanup();
+	}
+	onHide = () => {
+		var {onHide} = this.props;
+		this.cleanup();
+		onHide && onHide();
+	}
+	onShow = () => {
+		var {onShow} = this.props;
+		this.curtain = document.createElement('div');
+		this.curtain.style = "position:absolute;top:0;left:0;width:100%;height:100%";
+		document.body.appendChild(this.curtain);
+		document.addEventListener('keydown', this.onKeyDown, false);
+		onShow && onShow();
+	}
+	onRef = ref => {
+		this.ref = ref;
+	}
+	render() {
+		var {onShow, onHide, ...others} = this.props;
+		return <RTIconMenu innerRef={this.onRef} onShow={this.onShow} onHide={this.onHide} {...others}/>;
+	}
+}
 
 const TooltipMenuItem = Tooltip(MenuItem);
 
@@ -58,7 +103,9 @@ function downloadJSON(downloadData) {
 	a.click();
 	document.body.removeChild(a);
 }
-var annotationHeight = 30,
+
+var annotationHeight = 47,
+	positionHeight = 17,
 	scaleHeight = 12;
 
 var styles = {
@@ -171,7 +218,7 @@ function mutationMenu(props, {onMuPit, onShowIntrons, onSortVisible}) {
 		rightValueType = valueType === 'mutation',
 		wrongDataSubType = column.fieldType !== 'mutation',
 		rightAssembly = (["hg19", "hg38", "GRCh37", "GRCh38"].indexOf(assembly) !== -1) ? true : false,  //MuPIT support hg19, hg38
-		noMuPit = !rightValueType || !rightAssembly || wrongDataSubType || pos,
+		noMuPit = !rightValueType || !rightAssembly || !!wrongDataSubType || !!pos,
 		noData = !_.get(data, 'req'),
 		mupitItemName = noData ? 'MuPIT 3D Loading' : 'MuPIT 3D (' + assembly + ' coding)',
 		sortVisibleItemName = sortVisible ? 'Sort using full region' : 'Sort using zoom region',
@@ -203,51 +250,67 @@ function supportsTumorMap({fieldType, fields, cohort, fieldSpecs}) {
 		}
 	});
 
-	var foundCohort = cohort.name.search(/^TCGA/) !== -1 || cohort.name === "Treehouse public expression dataset (July 2017)" ? cohort : undefined;
-
-	if (!foundCohort || !foundPublicHub || (['geneProbes', 'genes', 'probes', 'clinical'].indexOf(fieldType) === -1 ||
+	if (!foundPublicHub || (['geneProbes', 'genes', 'probes', 'clinical'].indexOf(fieldType) === -1 ||
 		_.any(fieldSpecs, obj => obj.fetchType === "signature")  || fields.length !== 1)) {
 		return null;
 	}
 
-	if (foundCohort.name === "Treehouse public expression dataset (July 2017)" ) {
-		return {
-			label: "Treehouse",
-			map: "Treehouse/THPED_July2017",
-			layout: ""
+	var tumorMapLinkout = {
+			'Treehouse public expression dataset (July 2017)': {
+				map: "Treehouse/THPED_July2017",
+				layout: "mRNA"
+			},
+			'Treehouse PED v8': {
+				map: "Treehouse/TreehousePEDv8",
+				layout: ""
+			},
+			'Treehouse PED v5 April 2018': {
+				map: "Treehouse/TreehousePEDv8_April2008",
+				layout: ""
+			},
+			'TCGA Pan-Cancer (PANCAN)': {
+				map: "PancanAtlas/SampleMap",
+				layout: "mRNA"
+			},
+			'GDC Pan-Cancer (PANCAN)': {
+				map: "xena_test/remapped_pancan_mrna",
+				layout: "layout"
+			}
 		};
-	} else if (foundCohort.name.search(/^TCGA/) !== -1) {
-		return {
-			label: "TCGA Pancan Atlas",
-			map: "PancanAtlas/SampleMap",
-			layout: "mRNA"
-		};
-	} else {
-		return null;
-	}
+
+	return _.getIn(tumorMapLinkout, [cohort.name]);
 }
 
 // Maybe put in a selector.
-function supportsGeneAverage(column) {
-	var {fieldType, fields, fieldList} = column;
-	return ['geneProbes', 'genes'].indexOf(fieldType) >= 0 && (fieldList || fields).length === 1;
-}
+var supportsGeneAverage = ({fieldType, fields, fieldList}, isChrom) =>
+	!isChrom && _.contains(['geneProbes', 'genes'], fieldType) &&
+		(fieldList || fields).length === 1;
 
-function matrixMenu(props, {onTumorMap, onMode}) {
+// Duplicated in denseMatrix.js, because of the weirdness with
+// fields vs. probes.
+var supportsClustering = ({fieldType, fields}) =>
+	_.contains(['genes', 'probes', 'geneProbes'], fieldType) && fields.length > 2;
+
+function matrixMenu(props, {onTumorMap, onMode, onCluster, isChrom}) {
 	var {cohort, column} = props,
-		{fieldType, noGeneDetail, fields, fieldSpecs} = column,
-		tumorMapCohort = supportsTumorMap({fieldType, fields, cohort, fieldSpecs});
+		{fieldType, noGeneDetail, fields, fieldSpecs, clustering} = column,
+		tumorMapCohort = supportsTumorMap({fieldType, fields, cohort, fieldSpecs}),
+		order = clustering == null ? 'clusters' :
+			fieldType === 'geneProbes' ? 'position' : 'list';
 
-	return addIdsToArr ([
-		supportsGeneAverage(column) ?
+	return addIdsToArr([
+		supportsClustering(column) ?
+			<MenuItem onClick={onCluster} caption={`Order by ${order}`} /> :
+			null,
+		supportsGeneAverage(column, isChrom) ?
 			(fieldType === 'genes' ?
 				<MenuItem title={noGeneDetail ? 'no common probemap' : ''}
 					disabled={noGeneDetail} onClick={(e) => onMode(e, 'geneProbes')} caption='Detailed view'/> :
-				<MenuItem onClick={(e) => onMode(e, 'genes')} caption='Gene average'/>)
-				: null,
+				<MenuItem onClick={(e) => onMode(e, 'genes')} caption='Gene average'/>) :
+				null,
 		tumorMapCohort ?
-			<MenuItem onClick={(e) => onTumorMap(tumorMapCohort, e)} caption={`TumorMap`}/>
-			: null
+			<MenuItem onClick={(e) => onTumorMap(tumorMapCohort, e)} caption={`Tumor Map`}/> :
+			null
 	]);
 }
 
@@ -269,12 +332,11 @@ function getStatusView(status, onReload) {
 	if (status === 'error') {
 		return (
 			<div style={styles.status}>
-				<span
-					onClick={onReload}
-					title='Error loading data. Click to reload.'
-					style={styles.error}
-					className='glyphicon glyphicon-warning-sign'
-					aria-hidden='true'/>
+				<i onClick={onReload}
+				   style={styles.error}
+				   title='Error loading data. Click to reload.'
+				   aria-hidden='true'
+				   className={'material-icons'}>warning</i>
 			</div>);
 	}
 	return null;
@@ -331,6 +393,11 @@ function filterExonsByCDS(exonStarts, exonEnds, cdsStart, cdsEnd) {
 		.map(([start, end]) => [Math.max(start, cdsStart), Math.min(end, cdsEnd)]);
 }
 
+var showPosition = column =>
+	_.contains(['segmented', 'mutation', 'SV', 'geneProbes'], column.fieldType) &&
+	_.getIn(column, ['dataset', 'probemapMeta', 'dataSubType']) !== 'regulon';
+
+
 class Column extends PureComponent {
 	state = {
 	    specialDownloadMenu: specialDownloadMenu
@@ -371,6 +438,7 @@ class Column extends PureComponent {
 
 	onDownload = () => {
 		var {column, data, samples, index, sampleFormat} = this.props;
+		gaEvents('spreadsheet', 'download', 'column');
 		download(widgets.download({column, data, samples, index: index, sampleFormat}));
 	};
 
@@ -383,6 +451,7 @@ class Column extends PureComponent {
 	};
 
 	onKm = () => {
+		gaEvents('spreadsheet', 'km');
 		this.props.onKm(this.props.id);
 	};
 
@@ -406,6 +475,11 @@ class Column extends PureComponent {
 
 	onShowIntrons = () => {
 		this.props.onShowIntrons(this.props.id);
+	};
+
+	onCluster = () => {
+		this.props.onCluster(this.props.id,
+			this.props.column.clustering ? undefined : 'probes');
 	};
 
 	onSortVisible = () => {
@@ -495,15 +569,14 @@ class Column extends PureComponent {
 			data = _.getIn(this.props, ['data']),
 			valueType = _.getIn(this.props, ['column', 'valueType']),
 			fieldType = _.getIn(this.props, ['column', 'fieldType']),
-			url = "https://tumormap.ucsc.edu/?xena=addAttr&p=" + tumorMap.map + "&layout=" + tumorMap.layout,
-			customColor = _.getIn(this.props, ['column', 'dataset', 'customcolor']);
+			url = "https://tumormap.ucsc.edu/?xena=addAttr&p=" + tumorMap.map + "&layout=" + tumorMap.layout;
 
 		var ds = JSON.parse(fieldSpecs.dsID),
 			hub = ds.host,
 			dataset = ds.name,
-			feature = (fieldType !== "geneProbes") ? fieldSpecs.fields[0] : _.getIn(data, ['req', 'probes', 0]);
+			feature = (fieldType !== "geneProbes") ? fieldSpecs.fields[0] : _.getIn(data, ['req', 'probes', 0]),
+			customColor = _.getIn(this.props, ['column', 'dataset', 'customcolor', feature]); // object, key value pair
 
-		customColor = _.extend(customColor, );
 
 		url = url + "&hub=" + hub + "/data/";
 		url = url + "&dataset=" + dataset;
@@ -511,12 +584,11 @@ class Column extends PureComponent {
 
 		if (valueType === "coded") {
 			var codes = _.getIn(data, ['codes']),
-				cat, colorhex,
-				colors = _.isEmpty(customColor) ? categoryMore : customColor;
+				cat, colorhex;
 
 			_.map(codes, (code, i) => {
 				cat = code;
-				colorhex = colors[i % colors.length];
+				colorhex = _.isEmpty(customColor) ? categoryMore[i % categoryMore.length] : customColor[code];
 				colorhex = colorhex.slice(1, colorhex.length);
 				url = url + "&cat=" + encodeURIComponent(cat);
 				url = url + "&color=" + colorhex;
@@ -545,34 +617,39 @@ class Column extends PureComponent {
 				zoom, data, fieldFormat, sampleFormat, hasSurvival, searching,
 				onClick, tooltip, wizardMode, onReset,
 				interactive, append} = this.props,
+			isChrom = !!parsePos(_.get(column.fieldList || column.fields, 0),
+					_.getIn(column, ['assembly'])),
 			{specialDownloadMenu} = this.state,
 			{width, dataset, columnLabel, fieldLabel, user} = column,
-			{onMode, onTumorMap, onMuPit, onShowIntrons, onSortVisible, onSpecialDownload} = this,
+			{onMode, onTumorMap, onMuPit, onCluster, onShowIntrons, onSortVisible, onSpecialDownload} = this,
 			menu = optionMenu(this.props, {onMode, onMuPit, onTumorMap, onShowIntrons, onSortVisible,
-				onSpecialDownload, specialDownloadMenu}),
+				onCluster, onSpecialDownload, specialDownloadMenu, isChrom}),
 			[kmDisabled, kmTitle] = disableKM(column, hasSurvival),
 			status = _.get(data, 'status'),
 			refreshIcon = (<i className='material-icons' onClick={onReset}>close</i>),
 			// move this to state to generalize to other annotations.
-			annotation = (['segmented', 'mutation', 'SV'].indexOf(column.fieldType) !== -1) ?
+			annotation = showPosition(column) ?
 				<RefGeneAnnotation
+					id={id}
 					column={column}
 					position={_.getIn(column, ['layout', 'chrom', 0])}
 					refGene={_.getIn(data, ['refGene'], {})}
+					probePosition={column.position}
 					tooltip={tooltip}
 					layout={column.layout}
 					height={annotationHeight}
+					positionHeight={column.position ? positionHeight : 0}
 					width={width}
-					mode={parsePos(_.getIn(column, ['fields', 0]), _.getIn(column, ['assembly'])) ?
+					mode={isChrom ?
 						"coordinate" :
 						((_.getIn(column, ['showIntrons']) === true) ?  "geneIntron" : "geneExon")}/>
 				: null,
-			scale = (['segmented', 'mutation', 'SV'].indexOf(column.fieldType) !== -1) ?
+			scale = showPosition(column) ?
 				<ChromPosition
 					layout = {column.layout}
 					width = {width}
 					scaleHeight ={scaleHeight}
-					mode = {parsePos(_.getIn(column, ['fields', 0]), _.getIn(column, ['assembly'])) ?
+					mode = {isChrom ?
 						"coordinate" :
 						((_.getIn(column, ['showIntrons']) === true) ?  "geneIntron" : "geneExon")}/>
 				: null;
@@ -613,16 +690,14 @@ class Column extends PureComponent {
 							</div>
 						}
 						 wizardMode={wizardMode}>
-					<Crosshair frozen={!interactive || this.props.frozen}>
-						<div style={{height: annotationHeight + scaleHeight + 4}}>
-							{annotation ?
-								<DragSelect enabled={!wizardMode} onClick={this.onXZoomOut} onSelect={this.onXDragZoom}>
-									{scale}
-									<div style={{height: 2}}/>
-									{annotation}
-								</DragSelect> : null}
-						</div>
-					</Crosshair>
+					<div style={{cursor: annotation ? `url(${crosshair}) 12 12, crosshair` : 'default', height: annotationHeight + scaleHeight + 4}}>
+						{annotation ?
+							<DragSelect enabled={!wizardMode} onClick={this.onXZoomOut} onSelect={this.onXDragZoom}>
+								{scale}
+								<div style={{height: 2}}/>
+								{annotation}
+							</DragSelect> : null}
+					</div>
 					<ResizeOverlay
 						enable={interactive}
 						onResizeStop={this.onResizeStop}
@@ -636,7 +711,7 @@ class Column extends PureComponent {
 							samples={samples.slice(zoom.index, zoom.index + zoom.count)}
 							samplesMatched={samplesMatched}/>
 						<div style={{position: 'relative'}}>
-							<Crosshair frozen={!interactive || this.props.frozen}>
+							<Crosshair height={zoom.height} frozen={!interactive || this.props.frozen}>
 								{widgets.column({ref: 'plot', id, column, data, index, zoom, samples, onClick, fieldFormat, sampleFormat, tooltip})}
 								{getStatusView(status, this.onReload)}
 							</Crosshair>

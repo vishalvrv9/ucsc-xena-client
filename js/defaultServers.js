@@ -9,8 +9,9 @@ var servers = {
 	pcawgHub: 'https://pcawg.xenahubs.net',
 	singlecellHub: 'https://singlecell.xenahubs.net',
 	pancanAtlasHub: 'https://pancanatlas.xenahubs.net',
-	treehouseHub: 'https://treehouse.xenahubs.net',
-	gdcHub: "https://gdc.xenahubs.net"
+	treehouseHub: 'https://xena.treehouse.gi.ucsc.edu:443',
+	gdcHub: "https://gdc.xenahubs.net",
+	atacSeqHub: "https://atacseq.xenahubs.net"
 };
 
 module.exports = {
@@ -20,10 +21,10 @@ module.exports = {
 		[servers.publicHub]: 'UCSC public hub',
 		[servers.tcgaHub]: 'TCGA hub',
 		[servers.icgcHub]: 'ICGC hub',
-		[servers.toilHub]: 'GA4GH (TOIL) hub',
+		[servers.toilHub]: 'UCSC Toil RNAseq Recompute',
 		[servers.pcawgHub]: 'PCAWG public hub',
 		[servers.singlecellHub]: 'Single-cell RNAseq hub',
-		[servers.pancanAtlasHub]: 'PanCanAtlas Hub',
+		[servers.pancanAtlasHub]: 'Pan-Cancer Atlas Hub',
 		[servers.treehouseHub]: 'Treehouse Hub',
 		[servers.gdcHub]: 'GDC Hub'
 	},
@@ -31,10 +32,22 @@ module.exports = {
 		servers.localHub,
 		servers.publicHub,
 		servers.tcgaHub,
+		servers.pancanAtlasHub,
 		servers.icgcHub,
 		servers.toilHub,
 		servers.treehouseHub,
-		servers.gdcHub
+		servers.gdcHub,
+		servers.atacSeqHub
+	],
+	enabledServers: [
+		servers.localHub,
+		servers.publicHub,
+		servers.tcgaHub,
+		servers.pancanAtlasHub,
+		servers.icgcHub,
+		servers.toilHub,
+		servers.gdcHub,
+		servers.atacSeqHub
 	],
 	publicServers: [
 		servers.publicHub,
@@ -44,6 +57,9 @@ module.exports = {
 		servers.pancanAtlasHub,
 		servers.pcawgHub,
 		servers.treehouseHub,
-		servers.gdcHub
+		servers.gdcHub,
+		servers.atacSeqHub,
+		servers.singlecellHub,
+		'https://tdi.xenahubs.net'
 	]
 };

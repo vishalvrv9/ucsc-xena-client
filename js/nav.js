@@ -19,6 +19,7 @@ import {ThemeProvider} from 'react-css-themr';
 import Link from 'react-toolbox/lib/link';
 var navTheme = require('./navTheme');
 var BookmarkMenu = require('./views/BookmarkMenu');
+var {servers: {localHub}} = require('./defaultServers');
 
 // Styles
 var compStyles = require('./nav.module.css');
@@ -35,33 +36,30 @@ var links = [
 	{label: 'Transcripts', nav: 'transcripts'},
 	{label: 'Data Hubs', nav: 'hub'},
 	// {href: 'https://genome-cancer.ucsc.edu/download/public/get-xena/index.html', label: 'Local Xena'},
-	{href: 'http://xena.ucsc.edu/private-hubs/', label: 'View My Data'},
+	{label: 'View My Data', nav: 'datapages', params: {addHub: localHub, host: localHub}},
 	{href: 'http://xena.ucsc.edu/xena-python-api/', label: 'Python'},
 ];
 
 var helpLink = {
-	href: 'https://docs.google.com/a/soe.ucsc.edu/document/d/1CIWj6L8LAaHFmLek3yrbrjFKRm_l3Sy73lJ4wY-WM8Y',
-	label: 'Help'
+	href: 'https://ucsc-xena.gitbook.io/project/',
+	label: 'Help',
+	target: '_blank'
 };
 
 var active = (l, activeLink) => l.nav === activeLink;
 
 class XenaNav extends React.Component {
-	onClick = (nav) => {
-		this.props.onNavigate(nav);
-	};
-
 	render() {
 		let {isPublic, activeLink, getState, onImport} = this.props;
 		let routes = _.map(links, l => {
-			var {nav, ...others} = l,
-			onClick = nav ? () => this.onClick(nav) : undefined;
+			var {nav, params, ...others} = l,
+			onClick = nav ? () => this.props.onNavigate(nav, params) : undefined;
 			return {...others, onClick, active: active(l, activeLink)};
 		});
 		let logoSrcSet = `${logoSantaCruz2xImg} 2x, ${logoSantaCruz3xImg} 3x`;
 		return (
 			<AppBar className={compStyles.NavAppBar}>
-				<a href='http://xena.ucsc.edu/'><img className={compStyles.logoXena} src={logoSantaCruzImg} srcSet={logoSrcSet}/></a>
+				<a href='http://xena.ucsc.edu/' className={compStyles.logoXena}><img title={window.ga ? '' : 'no analytics'} src={logoSantaCruzImg} srcSet={logoSrcSet}/></a>
 				<Navigation type="horizontal" routes={routes}>
 					{getState ? <BookmarkMenu isPublic={isPublic} getState={getState} onImport={onImport}/> : null}
 					<Link {...helpLink} />

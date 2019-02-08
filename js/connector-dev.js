@@ -8,7 +8,7 @@ let {createDevTools} = require('./controllers/devtools');
 import LogMonitor from 'redux-devtools-log-monitor';
 import DockMonitor from 'redux-devtools-dock-monitor';
 var nostate = require('./nostate');
-var urlParams = require('./urlParams');
+import urlParams from './urlParams';
 var LZ = require('./lz-string');
 var {compactState, expandState} = require('./compactData');
 var migrateState = require('./migrateState');
@@ -24,7 +24,7 @@ function logError(err) {
 }
 
 var dropTransient = state =>
-	_.assoc(state, 'wizard', {}, 'datapages', undefined);
+	_.assoc(state, 'wizard', {}, 'datapages', undefined, 'localStatus', undefined, 'localQueue', undefined,  'import', undefined);
 
 
 // serialization

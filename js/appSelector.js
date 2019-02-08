@@ -7,6 +7,8 @@ var widgets = require('./columnWidgets');
 var km = require('./models/km');
 var {searchSamples} = require('./models/searchSamples');
 var isPublicSelector = require('./isPublicSelector');
+// XXX should move userServers, or maybe put it in a selector
+var {userServers} = require('./controllers/common');
 
 var createSelector = createSelectorCreator(defaultMemoize, _.isEqual);
 
@@ -89,9 +91,10 @@ var kmSelector = createSelector(
 		state => _.getIn(state, ['index', _.getIn(state, ['km', 'id'])]),
 		state => _.getIn(state, ['km', 'cutoff']),
 		state => _.getIn(state, ['km', 'splits']),
+		state => _.getIn(state, ['km', 'survivalType']),
 		state => state.survival,
-		(samples, column, data, index, cutoff, splits, survival) =>
-			column && survival && km.makeGroups(column, data, index, cutoff, splits, survival, samples));
+		(samples, column, data, index, cutoff, splits, survivalType, survival) =>
+			column && survival && km.makeGroups(column, data, index, cutoff, splits, survivalType, survival, samples));
 
 // Enforce default width in wizardMode
 var ammedWidthSelector = createFmapSelector(
@@ -102,7 +105,13 @@ var ammedWidthSelector = createFmapSelector(
 
 var index = state => ({...state, index: indexSelector(state)});
 var avg = state => ({...state, data: mergeKeys(state.data, avgSelector(state))});
-var match = state => ({...state, samplesMatched: matchSelector(state)});
+var match = state => _.Let((m = matchSelector(state), hl = state.highlightSelect) =>
+			({
+				...state,
+				samplesMatched: !m.matches ? null :
+					hl == null ? _.last(m.matches) :
+					m.matches[hl],
+				allMatches: m}));
 var sort = state => ({...state, samples: sortSelector(state)});
 var transform = state => ({...state, columns: mergeKeys(state.columns, transformSelector(state))});
 var ammedWidth = state => ({...state, columns: ammedWidthSelector(state)});
@@ -115,6 +124,52 @@ var kmGroups = state => ({...state, km: { ...state.km, groups: kmSelector(state)
 var spreadsheetSelector = selector =>
 		state => _.updateIn(state, ['spreadsheet'], selector);
 
+//
+
+var supportsTies = state => _.getIn(state, ['cohort', 'name'], '').indexOf('TCGA') === 0;
+
+var tiesSelector = state =>
+	_.assoc(state, 'tiesEnabled', supportsTies(state));
+
+var pickUserServers = (obj, servers) => _.pick(obj, userServers({servers}));
+
+var cohortsSelector = createSelector(
+		state => state.wizard.serverCohorts,
+		state => state.spreadsheet.servers,
+		(serverCohorts, servers) =>
+			_.uniq(_.flatten(_.values(pickUserServers(serverCohorts, servers)))));
+
+var indexBy = (key, list) => _.object(_.pluck(list, key), list);
+
+var datasetsSelector = createSelector(
+		state => _.get(state.wizard.cohortDatasets,
+					_.get(state.spreadsheet.cohort, 'name'), {}),
+		state => state.spreadsheet.servers,
+		(cohortDatasets, servers) =>
+			indexBy('dsID',
+				_.flatten(_.values(pickUserServers(cohortDatasets, servers)))));
+
+// XXX should try to deprecate this & use cohortFeatures
+var featuresByDsID = cohortFeatures =>
+	_.object(_.flatmap(cohortFeatures, (datasets, host) =>
+		_.map(datasets, (features, dataset) =>
+			[JSON.stringify({host, name: dataset}), features])));
+
+var featuresSelector = createSelector(
+		state => _.get(state.wizard.cohortFeatures,
+					_.get(state.spreadsheet.cohort, 'name'), {}),
+		state => state.spreadsheet.servers,
+		(cohortFeatures, servers) =>
+			featuresByDsID(pickUserServers(cohortFeatures, servers)));
+
+var setWizardProps = selector => state =>
+	selector(_.updateIn(state, ['wizard'], wizard =>
+				_.merge(wizard, {
+					cohorts: cohortsSelector(state),
+					datasets: datasetsSelector(state),
+					features: featuresSelector(state)
+				})));
+
 ///////
 // This is the main transform ('selector') of the application state, before passing to the view.
 // We build indexes of the column data, sort samples by the column data, transform
@@ -123,19 +178,22 @@ var spreadsheetSelector = selector =>
 // The result of the transforms is a state object with the calculated values merged.
 // The transforms are memoized for performance.
 
-var selector = state => kmGroups(transform(sort(match(avg(index(ammedWidth(setPublic(state))))))));
+var selector = state => tiesSelector(kmGroups(transform(sort(match(avg(index(ammedWidth(setPublic(state)))))))));
+
 
 // This seems odd. Surely there's a better test?
 var hasSurvival = survival =>
-	!!(_.get(survival, 'ev') &&
-		_.get(survival, 'tte') &&
-		_.get(survival, 'patient'));
+	!!(_.some(_.values(km.survivalOptions),
+		option => _.get(survival, option.ev) && _.get(survival, option.tte)) && _.get(survival, 'patient'));
 
 var survivalSelector = createSelector(
-	state => state.wizard.features,
+	state => state.wizard.cohortFeatures,
+	state => state.spreadsheet.cohort,
 	state => state.spreadsheet.km,
-	(features, kmState) => hasSurvival(km.pickSurvivalVars(features, kmState)));
+	(cohortFeatures, cohort, user) =>
+		cohort && cohortFeatures &&
+			hasSurvival(km.pickSurvivalVars(cohortFeatures[cohort.name], user)));
 
 var setSurvival = selector => state => selector(_.assocIn(state, ['spreadsheet', 'hasSurvival'], survivalSelector(state)));
 
-module.exports = setSurvival(spreadsheetSelector(selector));
+module.exports = setWizardProps(setSurvival(spreadsheetSelector(selector)));

@@ -4,11 +4,10 @@ var Rx = require('./rx');
 var _ = require('./underscore_ext');
 var {getErrorProps, logError} = require('./errors');
 var {getNotifications} = require('./notifications');
-var {defaultServers} = require('./defaultServers');
+var {defaultServers, enabledServers} = require('./defaultServers');
 
-var enabledServer = {user: true};
 var defaultServerState = _.object(defaultServers,
-		defaultServers.map(() => enabledServer));
+		defaultServers.map(s => ({user: _.contains(enabledServers, s)})));
 
 module.exports = function () {
 	// Create a channel for messages from the server. We want to avoid out-of-order
@@ -37,11 +36,9 @@ module.exports = function () {
 	// wrapSlotRequest, etc. There's no handler. Where should we catch such
 	// errors & how to handle them?
 
-
-
 	// Subject of [slot, obs]. We group by slot and apply switchLatest.
-	var serverCh = serverBus.groupBy(([slot]) => slotId(slot))
-		.map(g => g.switchMap(wrapSlotRequest))
+	var serverCh = serverBus.groupByNoLeak(([slot]) => slotId(slot))
+		.map(g => g.switchMap(wrapSlotRequest).take(1))
 		.mergeAll();
 
 	var uiBus = new Rx.Subject();
@@ -60,6 +57,10 @@ module.exports = function () {
 			zoom: {height: 460} // 460px forces visualizations to match min height of variable select card, required to maintain consistent heights across cohort/disease and variable select during wizard mode
 		},
 		wizard: {},
+		import: {
+			wizardPage: 0,
+			wizardHistory: []
+		}
 	};
 
 	return {

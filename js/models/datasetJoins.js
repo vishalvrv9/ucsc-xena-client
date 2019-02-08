@@ -120,6 +120,8 @@ var getFeature = (fieldType, fieldSpecs) =>
 
 var getFieldLabel = fieldSpecs => findFirstProp(fieldSpecs, 'fieldLabel');
 
+var getShowIntrons = fieldSpecs => findFirstProp(fieldSpecs, 'showIntrons');
+
 var fillNullFields = fieldSpecs => _.map(fieldSpecs, fs => fs || nullField);
 
 // Create a composite fieldSpec from a list of fieldSpecs. This uses
@@ -138,6 +140,8 @@ function combineColSpecs(fieldSpecs, datasets) {
 		fieldType = getFieldType(resetFieldSpecs);
 
 	return m({
+		...(getShowIntrons(resetFieldSpecs) ? {showIntrons: true} : {}),
+		...(fieldSpecs[0].vizSettings ? _.pick(fieldSpecs[0], 'vizSettings') : {}),
 		fields,
 		fieldSpecs: resetFieldSpecs,
 		fetchType: 'composite',
@@ -150,6 +154,7 @@ function combineColSpecs(fieldSpecs, datasets) {
 		noGeneDetail: !uniqProbemap, // XXX is this wrong? also have to check field len.
 		assembly: getAssembly(fieldType, resetFieldSpecs),
 		sFeature: getFeature(fieldType, resetFieldSpecs), // XXX deprecate?
+		clustering: _.get(fieldSpecs[0], 'clustering'),
 		// until we ditch composite, copy these for signatures
 		dsID: _.get(fieldSpecs[0], 'dsID'),
 		missing: _.get(fieldSpecs[0], 'missing'),
@@ -249,7 +254,8 @@ getField.add('float', (column, samplesList, fdata) => {
 	var cvtdData = _.mmap(column.fieldSpecs, samplesList, fdata, cvtField(column)),
 		field = concatValuesByFieldPosition(samplesList, cvtdData);
 
-	return computeMean(setProbes(field, fdata));
+	return _.assoc(computeMean(setProbes(field, fdata)),
+		'refGene', findFirstProp(fdata, 'refGene'));
 });
 
 // Combining coded fields:

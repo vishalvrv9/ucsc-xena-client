@@ -14,38 +14,34 @@
 .densityPlot--row--xAxis {
 	height: 1px;
 	background-color: black;
+	/* position relative puts the axis above the data, so long
+	 * as the data is not positioned. */
 	position: relative;
 	top: 50%;
-	vertical-align: middle;
-	z-index: 2;
 }
 
 .densityPlot--row--studyA {
 	display: flex;
 	align-items: flex-end;
-	height: 50%;
+	position: relative;
 }
 
 .densityPlot--row--studyB {
 	display: flex;
 	align-items: flex-end;
-	height: 50%;
-	bottom: 50%;
-	-webkit-transform: rotateX(180deg);
-	-moz-transform: rotateX(180deg);
-	transform: rotateX(180deg);
+	-webkit-transform: rotateX(180deg) translate(0, -1px);
+	-moz-transform: rotateX(180deg) translate(0, -1px);
+	transform: rotateX(180deg) translate(0, -1px);
 }
 
 .densityPlot--row--bin {
 	display: inline-block;
-	position: relative;
 	flex: 1;
 	margin: 0px;
 	float: left;
-	z-index: 1;
 }
 
 .densityPlot--row--zoom {
-	height: 210px;
+	height: 211px;
 	display: inline-block;
 }

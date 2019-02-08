@@ -1,50 +1,51 @@
 'use strict';
-var {updateIn, dissoc, contains, pick, isEqual, get, difference, uniq,
-	concat, pluck, getIn, assocIn, identity} = require('../underscore_ext');
+var {Let, assocIn, dissoc, get, identity,
+	matchKeys, pick, pluck, uniq, updateIn} = require('../underscore_ext');
 var {make, mount, compose} = require('./utils');
 var {cohortSummary, datasetMetadata, datasetSamplesExamples, datasetFieldN,
-	datasetFieldExamples, fieldCodes, datasetField, datasetFetch,
+	datasetFieldExamples, fieldCodes, datasetField, datasetFetch, datasetList,
 	datasetSamples, sparseDataExamples, segmentDataExamples} = require('../xenaQuery');
+var {servers: {localHub}} = require('../defaultServers');
 var {delete: deleteDataset} = require('../xenaAdmin');
-var {userServers, datasetQuery, updateWizard} = require('./common');
+var {userServers} = require('./common');
+var {ignoredType} = require('../models/dataType');
 var Rx = require('../rx');
+import {defaultHost} from '../urlParams';
+import cohortMetaData from '../cohortMetaData';
+import query from './query';
 
-function setHubs(state, {hubs}) {
-	return hubs ?
-		hubs.reduce(
-				(state, hub) => assocIn(state, ['servers', hub, 'user'], true),
-				state) :
-		state;
-}
+var hubsToAdd = ({hubs, addHub}) =>
+	(hubs || []).concat(addHub || []);
+
+var hubsToRemove = ({removeHub}) => removeHub || [];
+
+var removeHubs = (state, params) =>
+	hubsToRemove(params).reduce(
+			(state, hub) => assocIn(state, ['servers', hub, 'user'], false),
+			state);
+
+var addHubs = (state, params) =>
+	hubsToAdd(params).reduce(
+			(state, hub) => assocIn(state, ['servers', hub, 'user'], true),
+			state);
+
+var setHubs = (state, params) => removeHubs(addHubs(state, params), params);
 
 var {ajax, of, zip, zipArray} = Rx.Observable;
 var ajaxGet = url => ajax({url, crossDomain: true, method: 'GET', responseType: 'text'});
 
-var hubMeta = host => ajaxGet(`${host}/download/meta/info.mdown`).map(r => r.response)
-	.catch(() => of(undefined));
+var hostToGitURL = host => `${cohortMetaData}/hub_${host.replace(/https?:\/\//, '')}/info.mdown`;
+var hubMeta = host => ajaxGet(hostToGitURL(host)).catch(() => ajaxGet(`${host}/download/meta/info.mdown`)).map(r => r.response)
+        .catch(() => of({error: 'not available'}));
 
-var cohortMetaHost = 'https://rawgit.com/ucscXena/cohortMetaData/master';
-var cohortMeta = cohort => ajaxGet(`${cohortMetaHost}/cohort_${cohort}/info.mdown`).map(r => r.response)
-	.catch(() => of(undefined));
+var cohortMeta = cohort => ajaxGet(`${cohortMetaData}/cohort_${cohort}/info.mdown`).map(r => r.response)
+	.catch(() => of({error: 'not available'}));
 
-var notGenomic = ["sampleMap", "probeMap", "genePred", "genePredExt"];
-var genomicCohortSummary = server =>
-		zipArray([cohortSummary(server, notGenomic), hubMeta(server)])
-		.map(([cohorts, meta]) => ({server, meta, cohorts}))
-		.catch(err => {console.log(err); return of({server, cohorts: []});});
+var datasetDescription = dataset => ajaxGet(`${cohortMetaData}/dataset/${dataset}/info.mdown`).map(r => r.response)
+	.catch(() => of({error: 'not available'}));
 
-function fetchCohortSummary(serverBus, servers) {
-	var q = Rx.Observable.zipArray(servers.map(genomicCohortSummary));
-
-	serverBus.next(['cohort-summary', q]);
-}
-
-function fetchCohortData(serverBus, state) {
-	var {cohort} = state.params,
-		servers = userServers(state.spreadsheet);
-	serverBus.next(['cohort-data', datasetQuery(servers, {name: cohort}), cohort]);
-	serverBus.next(['cohort-data-meta', cohortMeta(cohort), cohort]);
-}
+var getMarkDown = url => ajaxGet(url).map(r => r.response)
+	.catch(() => of({error: 'not available'}));
 
 // emit url if HEAD request succeeds
 var head = url => ajax({url, crossDomain: true, method: 'HEAD'}).map(() => url);
@@ -124,65 +125,23 @@ var datasetMetaAndLinks = (host, dataset) => {
 			({meta, data, probeCount, downloadLink, probemapLink}));
 };
 
-function fetchDataset(serverBus, state) {
-	var {host, dataset} = state.params;
-	serverBus.next(['dataset-meta', datasetMetaAndLinks(host, dataset), host, dataset]);
-}
-
-function fetchIdentifiers(serverBus, state) {
-	var {host, dataset} = state.params;
-	serverBus.next(['dataset-identifiers', datasetField(host, dataset), host, dataset]);
-}
-
-function fetchSamples(serverBus, state) {
-	var {host, dataset} = state.params;
-	serverBus.next(['dataset-samples', datasetSamples(host, dataset, null), host, dataset]);
-}
-
-// wrapper to discard extra params
-var hostUpdateWizard = (serverBus, state, newState) =>
-	updateWizard(serverBus, state, newState);
-
 var spreadsheetControls = {
 	'init': (state, pathname = '/', params) => setHubs(state, params),
 	'add-host': (state, host) =>
 		assocIn(state, ['servers', host], {user: true}),
-	'add-host-post!': hostUpdateWizard,
 	'remove-host': (state, host) =>
 		updateIn(state, ['servers'], s => dissoc(s, host)),
-	'remove-host-post!': hostUpdateWizard,
 	'enable-host': (state, host, list) =>
 		assocIn(state, ['servers', host, list], true),
-	'enable-host-post!': hostUpdateWizard,
 	'disable-host': (state, host, list) =>
 		assocIn(state, ['servers', host, list], false),
-	'disable-host-post!': hostUpdateWizard
 };
 
-var controls = {
-	'cohort-summary': (state, cohorts) =>
-		updateIn(state, ['datapages', 'cohorts'],
-				(list = []) => concat(list, cohorts)),
-	'cohort-data': (state, datasets, cohort) =>
-		assocIn(state,
-				['datapages', 'cohort', 'cohort'], cohort,
-				['datapages', 'cohort', 'datasets'], datasets),
-	'cohort-data-meta': (state, meta) =>
-		assocIn(state,
-			   ['datapages', 'cohort', 'meta'], meta),
-	'dataset-meta': (state, metaAndLinks, host, dataset) =>
-		assocIn(state, ['datapages', 'dataset'], {host, dataset, ...metaAndLinks}),
-	'dataset-identifiers': (state, list, host, dataset) =>
-		assocIn(state, ['datapages', 'identifiers'], {host, dataset, list}),
-	'dataset-samples': (state, list, host, dataset) =>
-		assocIn(state, ['datapages', 'samples'], {host, dataset, list}),
-	'delete-dataset-post!': (serverBus, state, newState, host, name) =>
-		serverBus.next(['dataset-deleted', deleteDataset(host, name)]),
-	// Force page load after delete, to refresh all data.
-	'dataset-deleted-post!': () => location.reload()
-};
+var linkedHub = state =>
+	state.params.host ? [state.params.host] : [];
 
-var getSection = ({dataset, host, cohort, allIdentifiers, allSamples}) =>
+var getSection = ({dataset, host, cohort, allIdentifiers, allSamples, markdown}) =>
+	markdown ? 'markdown' :
 	allSamples ? 'samples' :
 	allIdentifiers ? 'identifiers' :
 	dataset && host ? 'dataset' :
@@ -190,107 +149,91 @@ var getSection = ({dataset, host, cohort, allIdentifiers, allSamples}) =>
 	cohort ? 'cohort' :
 	'summary';
 
-var linkedHub = state =>
-	state.params.host ? [state.params.host] : [];
+var sectionDataMethods = {
+	samples: ({params: {host, dataset}}) => [['samples', host, dataset]],
+	identifiers: ({params: {host, dataset}}) => [['identifiers', host, dataset]],
+	dataset: ({params: {host, dataset}}) => [
+		['dataset', host, dataset],
+		['datasetDescription', dataset]],
+	markdown: ({params: {markdown}}) => [['markdown', markdown]],
+	cohort: ({params: {cohort}, spreadsheet}) => [
+		['cohort', cohort],
+		...Let((servers = userServers(spreadsheet)) =>
+				servers.map(server => ['cohortDatasets', cohort, server]))],
+	summary: state =>
+		Let((servers = uniq(userServers(state.spreadsheet).concat(linkedHub(state)))) =>
+				servers.map(server => ['cohorts', server])),
+	hub: ({params}) =>
+		Let(({host} = defaultHost(params)) => [
+			['hubMeta', host],
+			['cohorts', host]])
+};
 
-var needCohortHubs = state =>
-	state.page === 'datapages' &&
-	contains(['summary', 'hub'], getSection(state.params)) ?
-	uniq(userServers(state.spreadsheet).concat(linkedHub(state))) : [];
+var sectionData = state =>
+	state.page !== 'datapages' ? [] :
+	Let((method = sectionDataMethods[getSection(defaultHost(state.params))]) =>
+		method ? method(state) : []);
 
-var hasCohortHubs = state => pluck(getIn(state, ['datapages', 'cohorts'], []), 'server');
+var fetchMethods = {
+	samples: (host, dataset) => datasetSamples(host, dataset, null),
+	identifiers: datasetField,
+	dataset: datasetMetaAndLinks,
+	datasetDescription: datasetDescription,
+	markdown: getMarkDown,
+	cohort: cohortMeta,
+	// XXX Note that this will cache lists from hubs that the user has
+	// recently disabled. We only clear cache when the cohort is changed.
+	// OTOH it will fetch any recently enabled hubs. So, the view should
+	// iterate over the userServer list, not this cache.
+	cohortDatasets: (cohort, server) =>
+		datasetList(server, [cohort]).catch(() => of([])),
+	cohorts: server => cohortSummary(server, ignoredType).catch(() => of([])),
+	hubMeta: hubMeta
+};
 
+var cachePolicy = {
+	// cache all hosts
+	cohorts: identity,
+	// cache a single key: the last one updated.
+	// XXX Doesn't work correctly for [host, dataset] paths, as it will accumulate
+	// values until host changes. Should change this so we don't hold on to
+	// multiple probe sets, for example.
+	default: (state, path) =>
+		updateIn(state, ['datapages', path[0]], item => pick(item, path[1]))
+};
 
-var needACohort = state =>
-	state.page === 'datapages' &&
-	getSection(state.params) === 'cohort' &&
-	state.params.cohort;
+var {controller: fetchController, invalidatePath} =
+	query(fetchMethods, sectionData, cachePolicy, 'datapages');
 
-var hasACohort = (state, cohort) =>
-	cohort === getIn(state, ['datapages', 'cohort', 'cohort']);
+// ['cohorts', localHub]
+// ['hubMeta', localHub]
+// ['samples', localHub, *]
+// ['identifiers', localHub, *]
+// ['dataset', localHub, *]
+// ['cohortDatasets', *, localHub]
+var invalidateLocalHub = Let(({any} = matchKeys) =>
+	function (state) {
+		var datapages = get(state, 'datapages', {});
+		invalidatePath(datapages, ['cohorts', localHub]);
+		invalidatePath(datapages, ['hubMeta', localHub]);
+		invalidatePath(datapages, ['samples', localHub, any]);
+		invalidatePath(datapages, ['identifiers', localHub, any]);
+		invalidatePath(datapages, ['dataset', localHub, any]);
+		invalidatePath(datapages, ['cohortDatasets', any, localHub]);
+	});
 
-var needDataset = state =>
-	state.page === 'datapages' &&
-	getSection(state.params) === 'dataset' &&
-	pick(state.params, 'dataset', 'host');
-
-var hasDataset = (state, {dataset, host}) =>
-	dataset === getIn(state, ['datapages', 'dataset', 'dataset']) &&
-	host === getIn(state, ['datapages', 'dataset', 'host']);
-
-var needIdentifiers = state =>
-	state.page === 'datapages' &&
-	getSection(state.params) === 'identifiers' &&
-	pick(state.params, 'dataset', 'host');
-
-var hasIdentifiers = (state, {dataset, host}) =>
-	dataset === getIn(state, ['datapages', 'identifiers', 'dataset']) &&
-	host === getIn(state, ['datapages', 'identifiers', 'host']) &&
-	getIn(state, ['datapages', 'identifiers', 'identifiers']);
-
-var needSamples = state =>
-	state.page === 'datapages' &&
-	getSection(state.params) === 'samples' &&
-	pick(state.params, 'dataset', 'host');
-
-var hasSamples = (state, {dataset, host}) =>
-	dataset === getIn(state, ['datapages', 'samples', 'dataset']) &&
-	host === getIn(state, ['datapages', 'samples', 'host']) &&
-	getIn(state, ['datapages', 'samples', 'samples']);
-
-// We don't save datapages over reload. We fetch missing data the first
-// time it is required, meaning a) in the previous state we did not
-// require it, or b) it is the 'init' action.
-function datapagesPostActions(serverBus, state, newState, action) {
-	// XXX is this only relevant in 'init' and 'navigate' actions?
-	// Should we just dispatch on those?
-	var [type] = action;
-
-	var needHubs = needCohortHubs(newState);
-	if (needHubs) {
-		let prevHubs = needCohortHubs(state),
-			hubChange = difference(needHubs, prevHubs);
-		if (type === 'init' || hubChange.length) {
-			let hasHubs = hasCohortHubs(newState),
-				missing = difference(needHubs, hasHubs);
-
-			if (missing.length) {
-				fetchCohortSummary(serverBus, missing);
-			}
-		}
-	}
-
-	var aCohort = needACohort(newState);
-	if (aCohort && !hasACohort(newState, aCohort) &&
-		   (type === 'init' || needACohort(state) !== aCohort)) {
-		fetchCohortData(serverBus, newState);
-	}
-
-	var dataset = needDataset(newState);
-	if (dataset && !hasDataset(state, dataset) &&
-			(type === 'init' || !isEqual(needDataset(state), dataset))) {
-		fetchDataset(serverBus, newState);
-	}
-
-	var identifiers = needIdentifiers(newState);
-	if (identifiers && !hasIdentifiers(state, identifiers) &&
-			(type === 'init' || !isEqual(needIdentifiers(state), identifiers))) {
-		fetchIdentifiers(serverBus, newState);
-	}
-
-	var samples = needSamples(newState);
-	if (samples && !hasSamples(state, samples) &&
-			(type === 'init' || !isEqual(needSamples(state), samples))) {
-		fetchSamples(serverBus, newState);
-	}
+function hubChangePost(serverBus, state, newState) {
+	invalidateLocalHub(newState);
 }
 
-var datapagesPostController = {
-	action: identity,
-	postAction: datapagesPostActions
+var controls = {
+	'localStatus-post!': hubChangePost,
+	'localQueue-post!': hubChangePost,
+	'delete-dataset-post!': (serverBus, state, newState, host, name) =>
+		serverBus.next(['dataset-deleted', deleteDataset(host, name)]),
 };
 
 module.exports = compose(
-		datapagesPostController,
+		fetchController,
 		mount(make(spreadsheetControls), ['spreadsheet']),
 		make(controls));

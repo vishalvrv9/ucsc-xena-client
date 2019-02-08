@@ -21,14 +21,16 @@ var addHelp = require('./addHelp');
 var getSpreadsheet = require('../Spreadsheet');
 var getStepperState = require('./getStepperState');
 var Application = require('../Application');
+//import TiesContainer from './TiesContainer';
 var {schemaCheckThrow} = require('../schemaCheck');
+import wrapLaunchHelper from '../LaunchHelper';
 
 function getFieldFormat(uuid, columns, data) {
 	var columnFields = _.getIn(columns, [uuid, 'fields']),
 		label = _.getIn(columns, [uuid, 'fieldLabel']),
 		fields = _.getIn(data, [uuid, 'req', 'probes'], columnFields);
-	if (fields.length === 1) {                           // 1 gene/probe, or 1 probe in gene: use default field label
-		return () => label;
+	if (fields.length === 1) {                           // 1 gene/probe, or 1 probe in gene
+		return field => (field === label) ? label : `${label} (${field})`;
 	} else if (fields.length === columnFields.length) {  // n > 1 genes/probes
 		return _.identity;
 	} else {                                             // n > 1 probes in gene
@@ -97,8 +99,8 @@ class ApplicationContainer extends React.Component {
 		this.props.callback(['sampleFilter', null]);
 	};
 
-	onNavigate = (page) => {
-		this.props.callback(['navigate', page]);
+	onNavigate = (page, params) => {
+		this.props.callback(['navigate', page, params]);
 	};
 
 	onImport = (content) => {
@@ -109,17 +111,22 @@ class ApplicationContainer extends React.Component {
 		}
 	};
 
+	onHighlightSelect = highlight => {
+		this.props.callback(['highlightSelect', highlight]);
+	}
+
 	// XXX Change state to appState in Application, for consistency.
 	render() {
-		let {state, selector, callback} = this.props,
+		let {state, selector, callback, children} = this.props,
 			{stateError} = state,
 			computedState = selector(state),
-			{spreadsheet: {mode}, loadPending} = computedState,
-			stepperState = getStepperState(computedState),
+			{spreadsheet: {mode, ties: {open} = {}}, loadPending} = computedState,
+			stepperState = getStepperState(computedState.spreadsheet),
 			View = {
 				heatmap: SpreadsheetContainer,
-				chart: ChartView
-			}[mode];
+				chart: ChartView,
+//				ties: TiesContainer,
+			}[open ? 'ties' : mode];
 		return (
 			<Application
 					onReset={this.onReset}
@@ -129,6 +136,7 @@ class ApplicationContainer extends React.Component {
 					stepperState={stepperState}
 					Spreadsheet={SpreadsheetContainer}
 					onHighlightChange={this.on.highlightChange}
+					onHighlightSelect={this.onHighlightSelect}
 					sampleFormat={this.sampleFormat}
 					getState={this.getState}
 					onNavigate={this.onNavigate}
@@ -145,8 +153,12 @@ class ApplicationContainer extends React.Component {
 					appState={computedState.spreadsheet}
 					wizard={computedState.wizard}
 					callback={callback}/>
+				{children}
 			</Application>);
 	}
 }
 
-module.exports = ApplicationContainer;
+// add pop-up notification for old hubs.
+module.exports = wrapLaunchHelper(
+		props => _.getIn(props, ['state', 'localStatus']) === 'old',
+		ApplicationContainer);

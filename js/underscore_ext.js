@@ -241,8 +241,7 @@ function curryN(n, fn) {
 	return curryArgs(new Array(n), 0, fn);
 }
 
-function mmapper(cols, fn) {
-	var n = cols.length;
+function mmapper(cols, n, fn) {
 	// Unroll the most common cases.
 	switch (n) {
 		// case 1 looks like a noop, i.e. we could return fn. However _.map also passes 'this', which
@@ -263,9 +262,8 @@ function mmapper(cols, fn) {
 }
 
 function mmap(...args) {
-	var cols = args.slice(0, args.length - 1),
-		fn = args[args.length - 1];
-	return _.map(cols[0], mmapper(cols, fn));
+	var fn = args[args.length - 1];
+	return (args[0] || []).map(mmapper(args, args.length - 1, fn));
 }
 
 function scanI(arr, fn, acc, i, out) {
@@ -332,6 +330,18 @@ function unique(arr, ...rest) {
 	return [...new Set(arr)];
 }
 
+function duplicates(arr) {
+	var sorted = arr.sort(),
+		result = [];
+
+	for(var i = 1; i < sorted.length; i++) {
+		if (arr[i - 1] === arr[i]) {
+			result.push(arr[i]);
+		}
+	}
+	return result;
+}
+
 // underscore union is slow, due to n^2 algorithm using _.contains.
 // Perserves order by using unique(), which preserves order by use of
 // Set.
@@ -365,6 +375,37 @@ function listSetsEqual(l1, l2) {
 	return _.every(l2, v => s1.has(v));
 }
 
+// Return paths in obj which match path, where path is a path array
+// of form [key | matchKeys.any, key | matchKeys.any, ...].
+// key will match a literal string key. any will match any key.
+// E.g. ['a', matchKey.any] will match ['a', 'b'], ['a', 'c'] in
+// {a: {b: 0, c: 1}}
+var any = {};
+var matchKeys = (obj, path, i = 0)  =>
+	i === path.length ? [path] :
+	path[i] === any ? Object.keys(obj)
+		.map(k => matchKeys(obj[k], splice(path, i, 1, k), i + 1)).flatten() :
+	!obj.hasOwnProperty(path[i]) ? [] :
+	matchKeys(obj[path[i]], path, i + 1);
+
+matchKeys.any = any;
+
+function anyRange(coll, start, end, pred = _.identity, i = start) {
+	return i === end ? false :
+		pred(coll[i]) ? true :
+		anyRange(coll, start, end, pred, i + 1);
+}
+
+// In theory one could apply zip, but 'apply' will blow the
+// stack on chrome.
+var transpose = coll =>
+	!coll || !coll.hasOwnProperty('length') ? [] :
+	coll.length === 0 ? coll :
+	coll[0].map((v, i) => coll.map(line => line[i]));
+
+// mutating 'push' that returns the array
+var push = (arr, v) => (arr.push(v), arr);
+
 // Starting some iterator methods here, but there are some performance
 // concerns. babel generators are slow, possibly due to injecting a try/catch.
 //
@@ -374,27 +415,11 @@ function listSetsEqual(l1, l2) {
 //	}
 //}
 //
-// Trying to avoid a generator function, due to performance, but this iterator
-// can't be used in places that expect an iterable, e.g. spread operator,
-// Array.from(), for...of.
-//
-//function imap(arr, fn) {
-//	return {
-//		next: function() {
-//			var n = arr.next();
-//			if (n.done) {
-//				return {done: true};
-//			}
-//			return fn(n.value);
-//		}
-//	}
-//}
-//
+
 // Iterable version. Wow, this is ugly.
-function imap(arr, fn) {
-	var iter = arr[Symbol.iterator]();
+function imap(iterable, fn) {
 	return {
-		[Symbol.iterator]: () => ({
+		[Symbol.iterator]: (iter = iterable[Symbol.iterator]()) => ({
 			next: () => {
 				var n = iter.next();
 				return n.done ? {done: true} : {value: fn(n.value)};
@@ -402,6 +427,23 @@ function imap(arr, fn) {
 		})
 	};
 }
+
+// repeat an iterable n times.
+function* repeat(n, iterable) {
+	while (n--) {
+		yield* iterable[Symbol.iterator]();
+	}
+}
+
+function valToStr(v) {
+	return (!isNaN(v) && (v !== null) && (v !== undefined)) ? "" + v : "";
+}
+
+// string slice() will hold a copy of the original string, which
+// will run us out of memory when processing buffers. So, force
+// a mem copy.
+var copyStr = str => (' ' + str).slice(1);
+
 //
 //function* irange(n) {
 //	for (let i = 0; i < n; ++i) {
@@ -411,18 +453,21 @@ function imap(arr, fn) {
 //
 //// tack on an iterator namespace. We should probably find a better
 //// functional methods library that supports iterators.
-_.i = {
-	map: imap
-//	range: irange
+_.iterable = {
+	map: imap,
+	repeat
 };
 
 _.mixin({
+	anyRange,
 	apply,
 	array,
 	concat,
+	copyStr,
 	cmpNumberOrNull,
 	curry,
 	curryN, // useful if the fn as multiple arities.
+	duplicates,
 	filterIndices,
 	findIndexDefault,
 	findLastIndexDefault,
@@ -433,6 +478,7 @@ _.mixin({
 	groupByConsec,
 	insert,
 	listSetsEqual,
+	matchKeys,
 	maxWith,
 	maxnull: arr => _.max(arr, v => v == null || isNaN(v) ? -Infinity : v),
 	meannull,
@@ -446,16 +492,19 @@ _.mixin({
 	partitionN,
 	pluckPaths,
 	pluckPathsArray,
+	push,
 	reverse,
 	scan,
 	splice,
 	spy,
 	sum: arr => _.reduce(arr, (x, y) => x + y, 0),
+	transpose,
 	union,
 	uniq: unique,
 	unique,
 	uniquify,
 	withoutIndex,
+	valToStr,
 	// This inscrutable method allows one to write a 'let' expression via
 	// es6 default arguments, e.g. _.Let((x = 5, y = x + 2) => x + y) === 12
 	Let: f => f()

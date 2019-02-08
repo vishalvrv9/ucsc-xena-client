@@ -7,11 +7,37 @@ var xenaQuery = require('../xenaQuery');
 var _ = require('../underscore_ext');
 var {reifyErrors, collectResults} = require('./errors');
 var fetch = require('../fieldFetch');
+var kmModel = require('../models/km');
 var {getColSpec} = require('../models/datasetJoins');
 var {signatureField} = require('../models/fieldSpec');
-var {publicServers} = require('../defaultServers');
+var defaultServers = require('../defaultServers');
+var {publicServers} = defaultServers;
+var gaEvents = require('../gaEvents');
 // pick up signature fetch
 require('../models/signatures');
+
+import Worker from 'worker-loader!./cluster-worker';
+
+const worker = new Worker();
+
+// XXX error handling? What do we do with errors in the worker?
+const workerObs = Rx.Observable.fromEvent(worker, 'message').share();
+var msgId = 0;
+
+// sendMessage wraps worker messages in ajax-like observables, by assigning
+// unique ids to each request, and waiting for a single response with the
+// same id. The worker must echo the id in the response.
+const sendMessage = msg => {
+        var id = msgId++;
+        worker.postMessage({msg, id});
+        return workerObs.filter(ev => ev.data.id === id).take(1).map(ev => ev.data.msg);
+};
+
+function fetchClustering(serverBus, state, id) {
+	var data = _.getIn(state, ['data', id]);
+	// maybe prune the data that we send?
+	serverBus.next([['cluster-result', id], sendMessage(['cluster', data])]);
+}
 
 var datasetResults = resps => collectResults(resps, servers =>
 		_.object(_.flatmap(servers, s => _.map(s.datasets, d => [d.dsID, d]))));
@@ -34,6 +60,29 @@ var allSamples = _.curry((cohort, max, server) => xenaQuery.cohortSamples(server
 
 function unionOfGroup(gb) {
 	return _.union(..._.map(gb, ([v]) => v));
+}
+
+function logSampleSources(cohortResps) {
+	var havingSamples = cohortResps.filter(([v]) => v.length > 0)
+			.map(([,, server]) => server),
+		types = new Set(havingSamples.map(s =>
+					s === defaultServers.servers.localHub ? 'localhost' :
+					// counting all ucsc-hosted hubs as public
+					s.indexOf('.xenahubs.net') !== -1 ? 'public' :
+					'private'));
+	if (types.has('localhost')) {
+		// user has samples on localhost hub
+		gaEvents('hubs', 'localhost');
+	}
+	if (types.has('private')) {
+		// user has samples on private hub that isn't localhost
+		gaEvents('hubs', 'private');
+	}
+	if (types.size > 1 && (types.has('localhost') || types.has('private'))) {
+		// user is joining samples across hubs, and not all of them
+		// are xena public hubs.
+		gaEvents('hubs', 'cohort join');
+	}
 }
 
 // Performance of this is probably poor, esp. due to underscore's horrible
@@ -63,6 +112,7 @@ var collateSamples = _.curry((cohorts, max, resps) => {
 		cohortSamples = unionOfGroup(resps || []).slice(0, max),
 		cohortOver = cohortSamples.length >= max,
 		hasPrivateSamples = cohortHasPrivateSamples(resps);
+	logSampleSources(resps);
 	return {samples: cohortSamples, over: serverOver || cohortOver, hasPrivateSamples};
 });
 
@@ -77,9 +127,6 @@ function fetchSamples(serverBus, servers, cohort, allowOverSamples) {
 }
 
 function fetchColumnData(serverBus, samples, id, settings) {
-
-	// XXX  Note that the widget-data-xxx slots are leaked in the groupBy
-	// in main.js. We need a better mechanism.
 //	if (Math.random() > 0.5) { // testing error handling
 		serverBus.next([['widget-data', id], fetch(settings, samples)]);
 //	} else {
@@ -144,50 +191,85 @@ var userServers = state => _.keys(state.servers).filter(h => state.servers[h].us
 var fetchCohortData = (serverBus, state) => {
 	let user = userServers(state);
 	if (state.cohort) {
-		fetchDatasets(serverBus, user, state.cohort);
 		fetchSamples(serverBus, user, state.cohort, state.allowOverSamples);
 	}
 };
 
-var unionOfResults = resps => collectResults(resps, results => _.union(...results));
+//
+// survival fields
+//
 
-function cohortQuery(servers) {
-	return Rx.Observable.zipArray(_.map(servers, s => reifyErrors(xenaQuery.allCohorts(s), {host: s})))
-			.flatMap(unionOfResults);
+var hasSurvFields  = vars => !!(_.some(_.values(kmModel.survivalOptions),
+	option => vars[option.ev] && vars[option.tte] && vars[option.patient]));
+
+var probeFieldSpec = ({dsID, name}) => ({
+	dsID,
+	fetchType: 'xena', // maybe take from dataset meta instead of hard-coded
+	valueType: 'float',
+	fieldType: 'probes',
+	fields: [name]
+});
+
+var codedFieldSpec = ({dsID, name}) => ({
+	dsID,
+	fetchType: 'xena', // maybe take from dataset meta instead of hard-coded
+	valueType: 'coded',
+	fieldType: 'clinical',
+	fields: [name]
+});
+
+function mapToObj(keys, fn) {
+	return _.object(keys, _.map(keys, fn));
 }
 
-function fetchCohorts(serverBus, state, newState, {force} = {}) {
-	var user = userServers(state),
-		newUser = userServers(newState);
-	if (force || !_.listSetsEqual(user, newUser)) {
-		serverBus.next(['cohorts', cohortQuery(newUser)]);
+function survivalFields(cohortFeatures) {
+	var vars = kmModel.pickSurvivalVars(cohortFeatures),
+		fields = {};
+
+	if (hasSurvFields(vars)) {
+		fields[`patient`] = getColSpec([codedFieldSpec(vars.patient)]);
+
+		_.values(kmModel.survivalOptions).forEach(function(option) {
+			if (vars[option.ev] && vars[option.tte]) {
+				fields[option.ev] = getColSpec([probeFieldSpec(vars[option.ev])]);
+				fields[option.tte] = getColSpec([probeFieldSpec(vars[option.tte])]);
+			}
+		});
+
+		if (_.has(fields, 'ev') && _.keys(fields).length > 3) {
+			delete fields.ev;
+			delete fields.tte;
+		}
 	}
+	return fields;
 }
 
-function updateWizard(serverBus, state, newState, opts = {}) {
-	fetchCohorts(serverBus, state, newState, opts);
-	let user = userServers(state);
-	// If there's a bookmark on wizard mode step 2, will we fail
-	// to load the dataset?
-	if (newState.cohort && (opts.force || (newState.cohort.name !== _.get(state.cohort, 'name')))) {
-		fetchDatasets(serverBus, user, newState.cohort);
-	}
+// If field set has changed, re-fetch.
+function fetchSurvival(serverBus, state) {
+	let {wizard: {cohortFeatures},
+			spreadsheet: {cohort, survival, cohortSamples}} = state,
+		fields = survivalFields(cohortFeatures[cohort.name]),
+		survFields = _.keys(fields),
+		refetch = _.some(survFields,
+				f => !_.isEqual(fields[f], _.getIn(survival, [f, 'field']))),
+		queries = _.map(survFields, key => fetch(fields[key], cohortSamples)),
+		collate = data => mapToObj(survFields,
+				(k, i) => ({field: fields[k], data: data[i]}));
+
+	refetch && serverBus.next([
+			'km-survival-data', Rx.Observable.zipArray(...queries).map(collate)]);
 }
 
-var clearWizardCohort = state =>
-	_.assocIn(state, ['wizard', 'datasets'], undefined,
-					 ['wizard', 'features'], undefined);
 
 module.exports = {
 	fetchCohortData,
-	fetchCohorts,
 	fetchColumnData,
+	fetchClustering,
 	fetchDatasets,
 	fetchSamples,
+	fetchSurvival,
 	resetZoom,
 	setCohort,
 	userServers,
-	updateWizard,
-	clearWizardCohort,
 	datasetQuery
 };

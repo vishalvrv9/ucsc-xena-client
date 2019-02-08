@@ -3,27 +3,33 @@
 require('./base');
 const React = require('react');
 var {uniq, flatten, sortBy, groupBy, map, flatmap, partitionN, mapObject,
-	pluck, concat, where, contains, get, updateIn, range, Let,
+	contains, get, updateIn, range, Let, pick,
 	zip, identity, getIn, sum, keys, values, mmap} = require('./underscore_ext');
 var {Observable: {from}, Scheduler: {animationFrame}} = require('./rx');
 var {parseDsID} = require('./xenaQuery');
 import Link from 'react-toolbox/lib/link';
 var styles = require('./Datapages.module.css');
 var nav = require('./nav');
-var {serverNames} = require('./defaultServers');
 import {Checkbox} from 'react-toolbox/lib/checkbox';
 import {Button} from 'react-toolbox/lib/button';
 var showdown = require('showdown');
 var {stripHTML} = require('./dom_helper');
 var treehouseImg = require('../images/Treehouse.jpg');
 var {rxEvents} = require('./react-utils');
-var {servers: {localHub}} = require('./defaultServers');
+var {servers: {localHub}, serverNames} = require('./defaultServers');
 import Dialog from 'react-toolbox/lib/dialog';
+import {defaultHost} from './urlParams';
 var {encodeObject, urlParams} = require('./util');
 import {ThemeProvider} from 'react-css-themr';
 var appTheme = require('./appTheme');
+var classNames = require('classnames');
+var {getHubParams} = require('./hubParams');
+import PureComponent from './PureComponent';
+import wrapLaunchHelper from './LaunchHelper';
 
 var getHubName = host => get(serverNames, host, host);
+
+var isLocalHub = host => host === localHub;
 
 var pluralize = (str, count) => count === 1 ? `1 ${str}` : `${count} ${str}s`;
 
@@ -46,10 +52,10 @@ var getUserServers = servers => keys(servers).filter(k => servers[k].user);
 // Data hubs sidebar
 //
 
-var hubLink = (host, onClick) => (
+var hubLink = (host, onClick, hubParams) => (
 	<Link
-		className={styles.link}
-		href={'?' + encodeObject({host})}
+		className={classNames(styles.link, styles.checkboxLink)}
+		href={'?' + encodeObject({host, ...hubParams})}
 		label={getHubName(host)}
 		onClick={onClick}/>);
 
@@ -63,7 +69,7 @@ class DataHubs extends React.Component {
 	};
 
 	render() {
-		var {spreadsheet: {servers}} = this.props.state;
+		var {hubParams, state: {spreadsheet: {servers}}} = this.props;
 		return (
 			<div className={styles.dataHubs}>
 				<h2>Active Data Hubs</h2>
@@ -72,7 +78,7 @@ class DataHubs extends React.Component {
 						({user}, host) => (
 							<li key={host}>
 								<Checkbox
-									label={hubLink(host, this.onHub)}
+									label={hubLink(host, this.onHub, hubParams)}
 									onChange={this.onSelect}
 									checked={user}
 									data-host={host}/>
@@ -91,51 +97,76 @@ var treehouse = cohort =>
 	cohort.search(/^Treehouse/gi) === -1 ? null :
 	<img src={treehouseImg} height='40px'/>;
 
-var cohortLink = (cohort, onClick) => (
+var cohortLink = (cohort, onClick, hubParams) => (
 	<Link
 		className={styles.link}
-		href={'?' + encodeObject({cohort})}
+		href={'?' + encodeObject({cohort, ...hubParams})}
 		label={cohort}
 		onClick={onClick}/>);
 
 var collateCohorts = hubCohorts =>
-	concat(...pluck(hubCohorts, 'cohorts')).reduce(
+	flatten(values(hubCohorts)).reduce(
 		(acc, cohort) => updateIn(acc, [cohort.cohort],
 			(v = 0) => cohort.count + v),
 		{});
 
-var CohortSummary = ({cohorts, onCohort}) => {
+var CohortSummary = ({cohorts, onCohort, hubParams, action}) => {
 	var names = sortBy(keys(cohorts), c => c.toLowerCase()),
 		nCohorts = names.length,
 		nDatasets = sum(values(cohorts));
 	return (
 		<div>
-			<h2>{pluralize('Cohort', nCohorts)}, {pluralize('Dataset', nDatasets)}</h2>
+			<h2>{pluralize('Cohort', nCohorts)}, {pluralize('Dataset', nDatasets)} {action}</h2>
 			<ul className={styles.list}>
 				{map(names, name =>
 					<li key={name}>
 						{treehouse(name)}
-						{cohortLink(name, onCohort)}
+						{cohortLink(name, onCohort, hubParams)}
 						{` (${pluralize('dataset', cohorts[name])})`}
 					</li>)}
 			</ul>
 		</div>);
 };
 
+var CohortHeader = ({inHubs, host, onImport, badge}) => {
+	return(
+		<div>
+			<h2 className={styles.inline}>{getHubName(host)}{inHubs}{badge}</h2>
+
+			{isLocalHub(host) &&
+			<div className={styles.headerButtons}>
+				<Button label={"Load Data"} onClick={onImport} accent />
+				<Button label={"Help"} target="_blank" href='https://ucsc-xena.gitbook.io/project/local-xena-hub' accent />
+			</div>}
+
+			{isLocalHub(host) ? null : <p>Hub address: {host}</p>}
+
+			{isLocalHub(host) && <div className={styles.descriptionBox}>
+				<p>A Local Xena Hub is an application on your computer for loading and storing data.</p>
+
+				<p>We support most types of genomic and/or phenotypic/clinical/annotation data.
+					This data can be your own or from another source, like GEO or a publication.</p>
+
+				<p>Data on a Local Xena Hub can only be viewed or accessed by the same computer on which it is running.</p>
+			</div>}
+		</div>
+	);
+};
+
 class CohortSummaryPage extends React.Component {
 	onCohort = (ev) => { navHandler.call(this, ev); };
 
 	render() {
-		var {state} = this.props,
+		var {hubParams, state} = this.props,
 			{spreadsheet: {servers}} = state,
 			userServers = getUserServers(servers),
-			cohorts = getIn(this.props.state, ['datapages', 'cohorts'], []),
-			activeCohorts = cohorts.filter(c => contains(userServers, c.server)),
+			cohorts = getIn(this.props.state, ['datapages', 'cohorts'], {}),
+			activeCohorts = pick(cohorts, userServers),
 			combined = collateCohorts(activeCohorts);
 		return (
 			<div className={styles.datapages}>
 				<DataHubs {...this.props}/>
-				<CohortSummary cohorts={combined} onCohort={this.onCohort}/>
+				<CohortSummary hubParams={hubParams} cohorts={combined} onCohort={this.onCohort}/>
 			</div>);
 	}
 }
@@ -153,7 +184,7 @@ class DeleteButton extends React.Component {
 
 	onReally = () => {
 		var {name} = this.props;
-		this.props.callback(['navigate', 'datapages', {host: localHub}]);
+		this.setState({active: false});
 		this.props.callback(['delete-dataset', localHub, name]);
 	};
 
@@ -182,7 +213,7 @@ var canDelete = ({status}, host) =>
 	host === localHub && contains(['loaded', 'error'], status);
 
 var markdownValue = value => {
-	if (value) {
+	if (value && !value.error) {
 		var converter = new showdown.Converter();
 		return (<div className={styles.header}
 			dangerouslySetInnerHTML={{__html: converter.makeHtml(value)}}/>);
@@ -193,13 +224,13 @@ var markdownValue = value => {
 // Cohort Datasets Page
 //
 
-var datasetLink = (callback, preferred, onClick) => ds => {
+var datasetLink = (callback, preferred, onClick, hubParams) => ds => {
 	var [host] = parseDsID(ds.dsID);
 	return (
 		<li key={ds.name}>
 			<Link
 				className={styles.link}
-				href={'?' + encodeObject({dataset: ds.name, host})}
+				href={'?' + encodeObject({dataset: ds.name, host, ...hubParams})}
 				label={ds.label}
 				onClick={onClick}/>
 			{preferred.has(ds.dsID) ? <span className={styles.star}>*</span> : null}
@@ -217,13 +248,13 @@ var datasetLink = (callback, preferred, onClick) => ds => {
 		</li>);
 };
 
-var drawGroup = (callback, groups, preferred, onClick) => dataSubType => {
+var drawGroup = (callback, groups, preferred, onClick, hubParams) => dataSubType => {
 	var list = sortBy(groups[dataSubType], g => g.label.toLowerCase());
 	return (
 		<div key={dataSubType}>
 			<h3>{dataSubType}</h3>
 			<ul className={styles.groupList}>
-				{map(list, datasetLink(callback, preferred, onClick))}
+				{map(list, datasetLink(callback, preferred, onClick, hubParams))}
 			</ul>
 		</div>);
 };
@@ -235,8 +266,8 @@ var getPreferred = (wizard, cohort) =>
 
 class CohortPage extends React.Component {
 	onViz = () => {
-		var {datapages, spreadsheet: {cohort: currentCohort}} = this.props.state,
-			cohort = getIn(datapages, ['cohort', 'cohort'], COHORT_NULL);
+		var {params, spreadsheet: {cohort: currentCohort}} = this.props.state,
+			cohort = params.cohort;
 
 		if (cohort !== get(currentCohort, 'name')) {
 			this.props.callback(['cohort', cohort]);
@@ -247,22 +278,25 @@ class CohortPage extends React.Component {
 	onDataset = (ev) => { navHandler.call(this, ev); };
 
 	render() {
-		var {datapages, params, wizard} = this.props.state,
-			cohort = getIn(datapages, ['cohort', 'cohort']) === params.cohort ?
-				datapages.cohort : {cohort: '...', datasets: []},
-			{callback} = this.props,
-			dsGroups = groupBy(values(cohort.datasets), 'dataSubType'),
+		var {hubParams, callback,
+				state: {datapages, spreadsheet, params: {cohort}, wizard}} = this.props,
+			servers = getUserServers(spreadsheet.servers),
+			meta = getIn(datapages, ['cohort', cohort]),
+			datasetsByHost = pick(
+					getIn(datapages, ['cohortDatasets', cohort], {}), servers),
+			datasets = flatten(values(datasetsByHost)),
+			dsGroups = groupBy(values(datasets), 'dataSubType'),
 			dataSubTypes = sortBy(keys(dsGroups), g => g.toLowerCase()),
-			preferred = getPreferred(wizard, params.cohort);
+			preferred = getPreferred(wizard, cohort);
 
 		return (
 			<div className={styles.datapages}>
-				{markdownValue(cohort.meta)}
+				{markdownValue(meta)}
 				<div className={styles.sidebar}>
 					<Button onClick={this.onViz} accent>Visualize</Button>
 				</div>
-				<h2>cohort: {treehouse(cohort.cohort)}{cohort.cohort}</h2>
-				{dataSubTypes.map(drawGroup(callback, dsGroups, preferred, this.onDataset))}
+				<h2>cohort: {treehouse(cohort)}{cohort}</h2>
+				{dataSubTypes.map(drawGroup(callback, dsGroups, preferred, this.onDataset, hubParams))}
 				{preferred.size === 0 ? null : (
 					<span>
 						<span className={styles.star}>*</span>
@@ -291,9 +325,9 @@ var dataPair = (key, value, method = identity) => value == null ? [] : [
 	<br/>];
 
 var toLink = value => <a href={value}>{value}</a>;
-var toCohortLink = onClick => cohort => (
+var toCohortLink = (onClick, hubParams) => cohort => (
 	<Link
-		href={'?' + encodeObject({cohort})}
+		href={'?' + encodeObject({cohort, ...hubParams})}
 		onClick={onClick}
 		label={cohort}/>);
 var toPMIDLink = value => (
@@ -375,124 +409,133 @@ var dataMethod = ({type = 'genomicMatrix', status} = {}) =>
 
 var setKey = arr => arr.map((el, i) => React.cloneElement(el, {key: i}));
 
-class DatasetPage extends React.Component {
-	onCohort = (ev) => { navHandler.call(this, ev); };
+var DatasetPage = wrapLaunchHelper(
+	props => getIn(props, ['state', 'params', 'host']) === localHub,
+	class extends PureComponent {
+		static displayName = 'DatasetPage'
+		onCohort = (ev) => { navHandler.call(this, ev); };
 
-	onViz = () => {
-		var {datapages, spreadsheet: {cohort: currentCohort}} = this.props.state,
-			cohort = getIn(datapages, ['dataset', 'meta', 'cohort'], COHORT_NULL);
+		onViz = () => {
+			var {params: {host, dataset},
+					datapages, spreadsheet: {cohort: currentCohort}} = this.props.state,
+				cohort = getIn(datapages, ['dataset', host, dataset, 'meta', 'cohort'], COHORT_NULL);
 
-		if (cohort !== get(currentCohort, 'name')) {
-			this.props.callback(['cohort', cohort]);
-		}
-		this.props.callback(['navigate', 'heatmap']);
-	};
+			if (cohort !== get(currentCohort, 'name')) {
+				this.props.callback(['cohort', cohort]);
+			}
+			this.props.callback(['navigate', 'heatmap']);
+		};
 
-	onIdentifiers = (ev) => { navHandler.call(this, ev); };
-	onSamples = (ev) => { navHandler.call(this, ev); };
+		onIdentifiers = (ev) => { navHandler.call(this, ev); };
+		onSamples = (ev) => { navHandler.call(this, ev); };
 
-	render() {
-		var {callback, state} = this.props,
-			{params: {host, dataset}, datapages} = state,
-			{meta, probeCount = 0, data, downloadLink, probemapLink, dataset: currentDataset,
-				host: currentHost} = get(datapages, 'dataset', {});
+		render() {
+			var {callback, state, hubParams, children, badge} = this.props,
+				{params: {host, dataset}, datapages} = state,
+				{meta, probeCount = 0, data, downloadLink, probemapLink} = getIn(datapages, ['dataset', host, dataset], {}),
+				githubDescripton = getIn(datapages, ['datasetDescription', dataset], null);
 
-		if (!meta || currentHost !== host || currentDataset !== dataset) {
+			if (!meta) {
+				return (
+					<div className={styles.datapages}>
+						{children /* LaunchHelper */}
+						<h2>dataset: {dataset}...</h2>
+						<h3>hub: {host}{badge}</h3>
+					</div>);
+			}
+			var {name, label = name, description, longTitle,
+				cohort = COHORT_NULL, dataSubType, platform, unit,
+				assembly, version, url, articletitle, citation, pmid,
+				dataproducer, author = dataproducer,
+				'wrangling_procedure': wranglingProcedure,
+				type = TYPE_NULL, status, loader, count} = meta;
+
 			return (
 				<div className={styles.datapages}>
-					<h2>dataset: ...</h2>
+					{children /* LaunchHelper */}
+					<div className={styles.sidebar}>
+						<Button onClick={this.onViz} accent>Visualize</Button>
+						{canDelete(meta, host) ?
+							<DeleteButton callback={callback} name={name} label={label}/> : null}
+					</div>
+					<h2>dataset: {(dataSubType ? dataSubType + ' - ' : '') + label}</h2>
+					<h3>hub: {host}{badge}</h3>
+					{headerValue(longTitle)}
+					{markdownValue(githubDescripton) || htmlValue(description)}
+					{setKey(flatten([
+						dataPair('cohort', cohort, toCohortLink(this.onCohort, hubParams)),
+						dataPair('dataset ID', name),
+						getStatus(status, loader),
+						dataPair('download', downloadLink, toDownloadLink),
+						dataPair('samples', count),
+						dataPair('version', version),
+						dataPair('type of data', dataSubType),
+						dataPair('assembly', assembly),
+						dataPair('unit', unit),
+						dataPair('platform', platform),
+						dataPair('ID/Gene Mapping', probemapLink, toDownloadLink),
+						dataPair('publication', articletitle),
+						dataPair('citation', citation),
+						dataPair('author', author),
+						dataPair('PMID', pmid, toPMIDLink),
+						flatmap(uniq(split(url, /,/)), url =>
+							dataPair('raw data', url, toLink)),
+						dataPair('wrangling', wranglingProcedure, toHTML),
+						dataPair('input data format', FORMAT_MAPPING[type])]))}
+					{status === 'loaded' ?
+						<span className={styles.tableControls}>
+							{type === 'genomicMatrix' ?
+								`${probeCount.toLocaleString()} identifiers X ${count} samples ` : null}
+							{type === 'clinicalMatrix' ?
+								`${count} samples X ${probeCount.toLocaleString()} identifiers ` : null}
+							<Link
+								href={'?' + encodeObject({host, dataset, allIdentifiers: true, ...hubParams})}
+								onClick={this.onIdentifiers} label='All Identifiers'/>
+							<Link
+								href={'?' + encodeObject({host, dataset, allSamples: true, ...hubParams})}
+								onClick={this.onSamples} label='All Samples'/>
+						</span> : null}
+					{dataMethod(meta)(meta, data)}
 				</div>);
 		}
-		var {name, label = name, description, longTitle,
-			cohort = COHORT_NULL, dataSubType, platform, unit,
-			assembly, version, url, articletitle, citation, pmid,
-			dataproducer, author = dataproducer,
-			'wrangling_procedure': wranglingProcedure,
-			type = TYPE_NULL, status, loader, count} = meta;
-
-		return (
-			<div className={styles.datapages}>
-				<div className={styles.sidebar}>
-					<Button onClick={this.onViz} accent>Visualize</Button>
-					{canDelete(meta, host) ?
-						<DeleteButton callback={callback} name={name} label={label}/> : null}
-				</div>
-				<h2>dataset: {(dataSubType ? dataSubType + ' - ' : '') + label}</h2>
-				{headerValue(longTitle)}
-				{htmlValue(description)}
-				{setKey(flatten([
-					dataPair('cohort', cohort, toCohortLink(this.onCohort)),
-					dataPair('dataset ID', name),
-					getStatus(status, loader),
-					dataPair('download', downloadLink, toDownloadLink),
-					dataPair('samples', count),
-					dataPair('version', version),
-					dataPair('hub', host),
-					dataPair('type of data', dataSubType),
-					dataPair('assembly', assembly),
-					dataPair('unit', unit),
-					dataPair('platform', platform),
-					dataPair('ID/Gene Mapping', probemapLink, toDownloadLink),
-					dataPair('publication', articletitle),
-					dataPair('citation', citation),
-					dataPair('author', author),
-					dataPair('PMID', pmid, toPMIDLink),
-					flatmap(uniq(split(url, /,/)), url =>
-						dataPair('raw data', url, toLink)),
-					dataPair('wrangling', wranglingProcedure, toHTML),
-					dataPair('input data format', FORMAT_MAPPING[type])]))}
-				{status === 'loaded' ?
-					<span className={styles.tableControls}>
-						{type === 'genomicMatrix' ?
-							`${probeCount.toLocaleString()} identifiers X ${count} samples` : null}
-						{type === 'clinicalMatrix' ?
-							`${count} samples X ${probeCount.toLocaleString()} identifiers` : null}
-						<Link
-							href={'?' + encodeObject({host, dataset, allIdentifiers: true})}
-							onClick={this.onIdentifiers} label='All Identifiers'/>
-						<Link
-							href={'?' + encodeObject({host, dataset, allSamples: true})}
-							onClick={this.onSamples} label='All Samples'/>
-					</span> : null}
-				{dataMethod(meta)(meta, data)}
-			</div>);
-	}
-}
-
-// Our handling of parameters 'hub' and 'host', is somewhat confusing. 'host'
-// means "show the hub page for this url". 'hub' means "add this url to the
-// active hub list, and, if in /datapages/ show the hub page for this url".
-// The 'hub' parameter can be repeated, which adds each hub to the active hub
-// list. Only the first one will be displayed when linking to /datapages/.
-// Needs refactor.
-var defaultHost = params =>
-	Let(({host, hubs} = params) =>
-			!host && hubs ? {...params, host: hubs[0]} : params);
+});
 
 //
 // Hub page
 //
 
-class HubPage extends React.Component {
-	onCohort = (ev) => { navHandler.call(this, ev); };
+var HubPage = wrapLaunchHelper(
+	props => defaultHost(props.state.params).host === localHub,
+	class extends PureComponent {
+		onCohort = (ev) => {navHandler.call(this, ev);};
 
-	render() {
-		var {state} = this.props,
-			{host} = defaultHost(state.params),
-			cohorts = getIn(state, ['datapages', 'cohorts'], []),
-			hubCohorts = where(cohorts, {server: host}),
-			coll = collateCohorts(hubCohorts),
-			inHubs = contains(getUserServers(state.spreadsheet.servers), host) ?
-				'' : ' (not in my data hubs)';
-		return (
-			<div className={styles.datapages}>
-				{markdownValue(getIn(hubCohorts, [0, 'meta']))}
-				<h2>{getHubName(host)}{inHubs}</h2>
-				<p>Host address: {host}</p>
-				<CohortSummary cohorts={coll} onCohort={this.onCohort}/>
-			</div>);
-	}
-}
+		onImport = () => {
+			this.props.callback(['reset-import-state']);
+			this.props.callback(['navigate', 'import']);
+		}
+
+		render() {
+			var {state, hubParams, badge, children} = this.props,
+				{spreadsheet: {servers}} = state,
+				userServers = getUserServers(servers),
+				{host} = defaultHost(state.params),
+				hubCohorts = getIn(state, ['datapages', 'cohorts', host], []),
+				coll = collateCohorts(hubCohorts),
+				inHubs = contains(userServers, host) ?
+					'' : ' (not in my data hubs)';
+
+			return (
+				<div className={styles.datapages}>
+					{children /* LaunchHelper */}
+					{markdownValue(getIn(state, ['datapages', 'hubMeta', host]))}
+					<CohortHeader inHubs={inHubs} host={host} onImport={this.onImport} badge={badge}/>
+					<CohortSummary
+						hubParams={hubParams}
+						cohorts={coll}
+						onCohort={this.onCohort}/>
+				</div>);
+		}
+	});
 
 //
 // Samples / Identifiers page
@@ -509,11 +552,9 @@ class ListPage extends React.Component {
 	state = {};
 
 	componentWillMount() {
-		var {state, path} = this.props,
-			list = getIn(state, ['datapages', path, 'list']);
 		var events = rxEvents(this, 'list');
 		var chunks = events.list
-			.startWith(list)
+			.startWith(this.props.list)
 			.distinctUntilChanged()
 			.filter(identity)
 			.switchMap(ids => {
@@ -532,19 +573,12 @@ class ListPage extends React.Component {
 	}
 
 	componentWillReceiveProps(props) {
-		var {state, path} = props,
-			list = getIn(state, ['datapages', path, 'list']);
-
-		this.on.list(list);
+		this.on.list(props.list);
 	}
 
 	render() {
-		var {state, path, title} = this.props,
-			{params: {host, dataset}, datapages} = state,
-			{dataset: currentDataset, host: currentHost}
-				= getIn(datapages, [path], {}),
-			{chunks, total} = currentHost !== host || currentDataset !== dataset ?
-				{} : this.state,
+		var {dataset, title} = this.props,
+			{chunks, total} = this.state,
 			percent = !chunks ? ' 0%' :
 				chunks.length === total ? '' :
 				` ${Math.floor(chunks.length / total * 100)}%`;
@@ -562,17 +596,36 @@ class ListPage extends React.Component {
 	}
 }
 
+class markdownPage extends React.Component {
+	render() {
+		var {state} = this.props,
+			content = getIn(state, ['datapages', 'markdown', state.params.markdown]);
+
+		return (
+			<div className={styles.datapages}>
+				{markdownValue(content)}
+			</div>);
+	}
+}
+
 var IdentifiersPage = props =>
-	<ListPage title='Identifiers' path='identifiers' {...props}/>;
+	Let(({state: {params: {host, dataset}}} = props) =>
+		(<ListPage title='Identifiers'
+			dataset={dataset}
+			list={getIn(props.state, ['datapages', 'identifiers', host, dataset])}/>));
 
 var SamplesPage = props =>
-	<ListPage title='Samples' path='samples' {...props}/>;
+	Let(({state: {params: {host, dataset}}} = props) =>
+		(<ListPage title='Samples'
+			dataset={dataset}
+			list={getIn(props.state, ['datapages', 'samples', host, dataset])}/>));
 
 //
 // Top-level dispatch to sub-pages
 //
 
-var getPage = ({dataset, host, cohort, allIdentifiers, allSamples}) =>
+var getPage = ({dataset, host, cohort, allIdentifiers, allSamples, markdown}) =>
+	markdown ? markdownPage :
 	allSamples ? SamplesPage :
 	allIdentifiers ? IdentifiersPage :
 	dataset && host ? DatasetPage :
@@ -585,15 +638,17 @@ class Datapages extends React.Component {
 		nav({activeLink: 'datapages', onNavigate: this.onNavigate});
 	}
 
-	onNavigate = (page) => {
-		this.props.callback(['navigate', page]);
+	onNavigate = (page, params) => {
+		this.props.callback(['navigate', page, params]);
 	};
 
 	render() {
-		var {state: {params}} = this.props, // XXX
+		var {state} = this.props, // XXX
+			{params} = state,
+			hubParams = getHubParams(state),
 			Page = getPage(defaultHost(params));
 
-		return <Page {...this.props} />;
+		return <Page {...this.props} hubParams={hubParams} />;
 	}
 }
 

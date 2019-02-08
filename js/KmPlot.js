@@ -4,14 +4,16 @@ import kmStyle from "./km.module.css";
 var _ = require('./underscore_ext');
 import PureComponent from './PureComponent';
 var React = require('react');
-import {Button} from 'react-toolbox/lib/button';
-
+import {Button, IconButton} from 'react-toolbox/lib/button';
+import Dropdown from 'react-toolbox/lib/dropdown';
 import Dialog from 'react-toolbox/lib/dialog';
 
 var Axis = require('./Axis');
 var {linear, linearTicks} = require('./scale');
 var pdf = require('./kmpdf');
 var NumberForm = require('./views/NumberForm');
+var {survivalOptions, getSplits} = require('./models/km');
+var gaEvents = require('./gaEvents');
 
 // Basic sizes. Should make these responsive. How to make the svg responsive?
 var margin = {top: 20, right: 30, bottom: 30, left: 50};
@@ -149,9 +151,8 @@ class WarningTrigger extends React.Component {
 			<div className={kmStyle.warningContainer}>
 				<Button
 					onClick={() => this.setState({show: true})}
-					className={kmStyle.showPWarningButton}
-				>
-					<span className={`glyphicon glyphicon-warning-sign ${kmStyle.pWarningIcon}`}/>
+					className={kmStyle.showPWarningButton}>
+					<i className={`material-icons ${kmStyle.pWarningIcon}`}>warning</i>
 				</Button>
 				{this.state.show ? <WarningDialog onHide={this.close} header={header} body={body}/> : null}
 			</div>
@@ -161,6 +162,7 @@ class WarningTrigger extends React.Component {
 
 class WarningDialog extends React.Component {
 	componentDidMount() {
+		document.documentElement.scrollTop = 0;
 		var body = document.getElementById("body");
 		body.style.overflow = "auto";
 	}
@@ -257,11 +259,44 @@ class Legend extends PureComponent {
 	}
 }
 
-function makeGraph(groups, setActiveLabel, activeLabel, size) {
+var survURL = {
+	"TCGA PanCanAtlas": encodeURI(
+		"https://www.cell.com/action/showFullTableImage?isHtml=true&tableId=tbl3&pii=S0092867418302290&code=cell-site")
+};
+
+function makeSurvivalTypeUI (cohort, survInfoURL, survType, survivalTypes, onSurvType) {
 	return (
-		<div className={kmStyle.graph} style={{width: 0.9 * size.width}}>
+		<div className={kmStyle.survTypeContainer}>
+			<Dropdown className={kmStyle.survType}
+				source = {survivalTypes.map(t => ({
+							value: t,
+							label: survivalOptions[t].label
+						}))}
+				value = {survType || survivalTypes[0]}
+				onChange={onSurvType}
+			/>
+			{survInfoURL ?
+				<IconButton onClick={() => (window.location.href = survInfoURL)}>
+					<i className={`material-icons ${kmStyle.infoIcon}`}>info</i>
+				</IconButton> : null}
+		</div>
+	);
+}
+
+function makeGraph(groups, setActiveLabel, activeLabel, size, cohort, survInfoURL,
+	survType, survivalTypes, onSurvType, min, max, onCutoff, cutoff) {
+	return (
+		<div className={kmStyle.graph}>
 			{svg(groups, setActiveLabel, activeLabel, {height: 0.8 * size.height, width: 0.9 * size.width})}
-			<div className={kmStyle.screen}/>
+			{makeSurvivalTypeUI(cohort, survInfoURL, survType, survivalTypes, onSurvType)}
+			<div>
+				<NumberForm
+					onChange={onCutoff}
+					dflt={max}
+					min={min}
+					max={max}
+					initialValue={cutoff}/>
+			</div>
 		</div>
 	);
 }
@@ -269,32 +304,36 @@ function makeGraph(groups, setActiveLabel, activeLabel, size) {
 function makeSplits(splits, onSplits) {
 	return (
 		<form>
-			<div>
-				<label className={kmStyle.splitLabel}>
+			<div className={kmStyle.splits}>
+				<label className={kmStyle.splitLabel} title='2 groups: top 50%, bottom 50%'>
 					<input value={2} type="radio" name="splits" checked={splits === 2} onChange={onSplits}/>
 					<span className={kmStyle.splitHint}>2 groups</span>
 				</label>
-				<label className={kmStyle.splitLabel}>
+				<label className={kmStyle.splitLabel} title='3 groups: top 33%, middle 33%, bottom 33%'>
 					<input value={3} type="radio" name="splits" checked={splits === 3} onChange={onSplits}/>
 					<span className={kmStyle.splitHint}>3 groups</span>
+				</label>
+				<label className={kmStyle.splitLabel} title='Quartiles: top 25%, bottom 25%'>
+					<input value={-4} type="radio" name="splits" checked={splits === -4} onChange={onSplits}/>
+					<span className={kmStyle.splitHint}>Quartiles</span>
 				</label>
 			</div>
 		</form>);
 }
 
-function makeDefinitions(groups, setActiveLabel, activeLabel, size, maySplit, splits, onSplits) {
+function makeDefinitions(groups, setActiveLabel, activeLabel, size, maySplit, splits, onSplits, label, clarification, warning) {
 	// get new size based on size ratio for definitions column
-
 	return (
 		<div className={kmStyle.definitions} style={{width: size.width}}>
 			<PValue pValue={groups.pValue} logRank={groups.KM_stats}
 				patientWarning={groups.patientWarning}/>
 			<br/>
-			{maySplit ? makeSplits(splits, onSplits) : null}
-			<br/>
+			<label>{label} {clarification}</label>
 			<Legend groups={groups}
 					setActiveLabel={setActiveLabel}
 					activeLabel={activeLabel}/>
+			{maySplit ? makeSplits(getSplits(splits), onSplits) : null}
+			{warning}
 		</div>
 	);
 }
@@ -341,6 +380,7 @@ class KmPlot extends PureComponent {
 	};
 
 	pdf = () => {
+		gaEvents('spreadsheet', 'pdf', 'km');
 		pdf(this.props.km.groups);
 	};
 
@@ -353,21 +393,29 @@ class KmPlot extends PureComponent {
 		callback(['km-splits', parseInt(ev.target.value, 10)]);
 	};
 
+	onSurvType = (ev) => {
+		var {callback} = this.props;
+		callback(['km-survivalType', ev]);
+	};
+
 	componentDidMount() {
+		document.documentElement.scrollTop = 0;
 		var body = document.getElementById("body");
 		body.style.overflow = "auto";
 	}
 
 	render() {
-		let {km: {splits = 2, title, label, groups, cutoff}, dims} = this.props,
+		let {km: {splits = 2, title, label, groups, cutoff, survivalType}, survivalKeys, cohort, dims} = this.props,
 			// groups may be undefined if data hasn't loaded yet.
 			maySplit = _.get(groups, 'maySplit', false),
 			min = _.getIn(groups, ['domain', 0]),
 			max = _.getIn(groups, ['domain', 1]),
 			warning = _.get(groups, 'warning'),
-			fullLabel = warning ? `${label} (${warning})` : label,
+			clarification = _.get(groups, 'clarification'),
 			{activeLabel} = this.state,
-			sectionDims = calcDims(dims, plotSize.ratios);
+			sectionDims = calcDims(dims, plotSize.ratios),
+			survivalTypes = _.intersection(survivalKeys, _.keys(survivalOptions)),
+			survInfoURL = _.getIn(survURL, [cohort], null);
 
 		let Content = _.isEmpty(groups)
 			? <div
@@ -383,24 +431,17 @@ class KmPlot extends PureComponent {
 						data.</h3></div>
 					: <div>
 						<Button onClick={this.pdf} className={kmStyle.PDFButton}>
-							<span className={`glyphicon glyphicon-download ${kmStyle.buttonIcon}`}/>
-							PDF
+							<i className={`material-icons ${kmStyle.buttonIcon}`}>file_download</i>
+							<span className={kmStyle.buttonText}>PDF</span>
 						</Button>
 						<Button onClick={this.help} className={kmStyle.helpButton}>
-							<span className={`glyphicon glyphicon-question-sign ${kmStyle.buttonIcon}`}/>
-							Help
+							<i className={`material-icons ${kmStyle.buttonIcon}`}>help</i>
+							<span className={kmStyle.buttonText}>Help</span>
 						</Button>
-						{makeGraph(groups, this.setActiveLabel, activeLabel, sectionDims.graph)}
-						{makeDefinitions(groups, this.setActiveLabel, activeLabel, sectionDims.definitions, maySplit, splits, this.onSplits)}
-						<div style={{clear: 'both'}}>
-							<NumberForm
-								onChange={this.onCutoff}
-								dflt={max}
-								min={min}
-								max={max}
-								initialValue={cutoff}/>
-						</div>
-						<samp className={kmStyle.featureLabel}>{fullLabel}</samp>
+						{makeGraph(groups, this.setActiveLabel, activeLabel, sectionDims.graph, cohort, survInfoURL,
+							survivalType, survivalTypes, this.onSurvType, min, max, this.onCutoff, cutoff)}
+						{makeDefinitions(groups, this.setActiveLabel, activeLabel, sectionDims.definitions,
+							maySplit, splits, this.onSplits, label, clarification, warning)}
 					</div>
 			);
 

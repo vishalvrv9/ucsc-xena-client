@@ -9,6 +9,7 @@ var {permuteCase, permuteBitCount, prefixBitLimit} = require('./permuteCase');
 var qs = require('./loadXenaQueries');
 
 var maxPermute = 7; // max number of chars to permute for case-insensitive match
+import cohortMetaData from './cohortMetaData';
 
 ///////////////////////////////////////////////////////
 // support for hg18/GRCh36, hg19/GRCh37, hg38/GRCh38, mm10
@@ -20,7 +21,7 @@ var refGene = {
 	GRCh37: {host: 'https://reference.xenahubs.net', name: 'gencode_good_hg19_V24lift37'},
 	hg38: {host: 'https://reference.xenahubs.net', name: 'gencode_good_hg38'},
 	GRCh38: {host: 'https://reference.xenahubs.net', name: 'gencode_good_hg38'},
-	mm9: {host: 'https://reference.xenahubs.net', name: 'gencode_good_mm10'}, // XXX wrong, but good enough
+	mm9: {host: 'https://reference.xenahubs.net', name: 'refgene_good_mm9'},
 	mm10: {host: 'https://reference.xenahubs.net', name: 'gencode_good_mm10'}
 };
 
@@ -299,6 +300,9 @@ function transformPOSTMethods(postMethods) {
 		// Apply a transform that requires the 'host' parameter
 		datasetMetadata: postFn => (host, dataset) =>
 			postFn(host, dataset).map(resp => datasetListTransform(host, resp)),
+		// Apply a transform that requires the 'host' parameter
+		probemapList: postFn => host =>
+			postFn(host).map(resp => datasetListTransform(host, resp)),
 		sparseData: mapResponse(indexMutations),
 		sparseDataRange: mapResponse(indexMutations),
 		// Generate case permutations of the gene parameter
@@ -341,10 +345,12 @@ function wrapDsIDParams(postMethods) {
 		'datasetProbeValues',
 		'datasetProbeSignature',
 		'datasetGeneProbesValues',
+		'datasetChromProbeValues',
 		'datasetGeneProbeAvg',
 		'datasetMetadata',
 		'featureList',
 		'fieldCodes',
+		'maxRange',
 		'refGeneExons',
 		'refGenePosition',
 		'refGeneRange',
@@ -390,20 +396,42 @@ var refGeneExonCase = dsIDFn((host, dataset, genes) =>
 	sparseDataMatchField('name2', host, dataset, genes)
 		.flatMap(caseGenes => refGeneExons(host, dataset, _.filter(caseGenes, _.identity))));
 
+var {ajax} = Rx.Observable;
+
+var ping = host => ajax({
+	url: host + '/ping/',
+	method: 'GET',
+	crossDomain: true,
+	responseType: 'text'});
+
+var toStatusDep = r =>
+	JSON.parse(r.response) === 3 ? 'old' :
+	'down';
+
+var toStatus = r =>
+	r.response === 'pong' ? 'up' :
+	'down';
+
+var pingOrExp = host =>
+		ping(host).map(toStatus).catch(e =>
+			e.status === 404 ? ajax(xenaPost(host, '(+ 1 2)')).map(toStatusDep) :
+			Rx.Observable.throw(e));
+
+var testStatus = (host, timeout = 5000) =>
+	pingOrExp(host)
+		.map(s => ({status: s}))
+		.timeoutWith(timeout, Rx.Observable.of({status: 'down'}))
+		.catch(({status, response}) => Rx.Observable.of(
+			{status: status === 503 && response === 'Database booting' ? 'started' : 'down'}));
 
 // test if host is up
-function testHost (host) {
-	return Rx.Observable.ajax(xenaPost(host, '(+ 1 2)'))
-		.map(s => !!(s.response && 3 === JSON.parse(s.response)))
-		.timeoutWith(5000, Rx.Observable.of(false))
-		.catch(() => Rx.Observable.of(false));
-}
+var testHost = (host, timeout = 5000) => testStatus(host, timeout).map(({status}) => status === 'up' || status === 'old');
 
-var cohortMetaURL = "https://raw.githubusercontent.com/ucscXena/cohortMetaData/master/xenacohort_tag.json";
+var cohortMetaURL = `${cohortMetaData}/xenacohort_tag.json`;
 
-var cohortPreferredURL = "https://raw.githubusercontent.com/ucscXena/cohortMetaData/master/defaultDataset.json";
+var cohortPreferredURL = `${cohortMetaData}/defaultDataset.json`;
 
-var cohortPhenotypeURL = "https://raw.githubusercontent.com/ucscXena/cohortMetaData/master/defaultPhenotype.json";
+var cohortPhenotypeURL = `${cohortMetaData}/defaultPhenotype.json`;
 
 var fetchJSON = url =>
 	Rx.Observable.ajax({
@@ -428,6 +456,7 @@ module.exports = {
 	nanstr,
 	xenaPost,
 	testHost,
+	testStatus,
 
 	// reference
 	refGene,

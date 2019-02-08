@@ -6,9 +6,11 @@ var xenaQuery = require('../xenaQuery');
 var heatmapColors = require('../heatmapColors');
 var widgets = require('../columnWidgets');
 var {greyHEX} = require('../color_helper');
+var parsePos = require('../parsePos');
+var exonLayout = require('../exonLayout');
 
-var {datasetProbeValues, datasetGeneProbeAvg, datasetGeneProbesValues,
-		fieldCodes} = xenaQuery;
+var {datasetChromProbeValues, datasetProbeValues, datasetGeneProbeAvg,
+	datasetGeneProbesValues, fieldCodes, refGeneRange} = xenaQuery;
 
 function second(x, y) {
 	return y;
@@ -50,28 +52,17 @@ function computeHeatmap(vizSettings, data, fields, samples) {
 	});
 }
 
-var flopIfNegStrand = (strand, req) =>
-	// sorted by start of probe in transcript direction (strand), for negative strand, the start of the probe is chromend
-	// known issue: tie break
-	{
-		if (strand === '-') {
-			let sortedReq = _.sortBy(_.zip(req.position, req.probes, req.values), item => -(item[0].chromend));
-			let [sortedPosition, sortedProbes, sortedValues] = _.unzip(sortedReq);
-			return _.assoc(req,
-				'position', sortedPosition,
-				'probes', sortedProbes,
-				'values', sortedValues);
-		} else {
-			return req;
-		}
-	};
-
-	/*strand === '-' ?
-		_.assoc(req,
-				'position', _.reverse(req.position),
-				'probes', _.reverse(req.probes),
-				'values', _.reverse(req.values)) :
-		req;*/
+// sorted by start of probe in transcript direction (strand), for negative strand, the start of the probe is chromend
+// known issue: tie break
+var flopIfNegStrand = (strand, req) => {
+	var sortedReq = _.sortBy(_.zip(req.position, req.probes, req.values),
+			strand === '-' ? item => -(item[0].chromend) : item => item[0].chromstart),
+		[sortedPosition, sortedProbes, sortedValues] = _.unzip(sortedReq);
+	return _.assoc(req,
+		'position', sortedPosition,
+		'probes', sortedProbes,
+		'values', sortedValues);
+};
 
 var colorCodeMap = (codes, colors) =>
 	colors ? _.map(codes, c => colors[c] || greyHEX) : null;
@@ -79,6 +70,44 @@ var colorCodeMap = (codes, colors) =>
 var getCustomColor = (fieldSpecs, fields, dataset) =>
 	fields.length === 1 ?
 		_.getIn(dataset, ['customcolor', fieldSpecs[0].fields[0]], null) : null;
+
+var defaultXZoom = (pos, refGene, position) =>
+	pos ? {
+		start: pos.baseStart,
+		end: pos.baseEnd} :
+	!refGene ? undefined :
+	_.Let(({txStart, txEnd} = refGene) => ({
+		start: Math.min(txStart, ..._.pluck(position, 'chromstart')),
+		end: Math.max(txEnd, ..._.pluck(position, 'chromend'))}));
+
+var supportsClustering = ({fieldType, fields}) =>
+	_.contains(['genes', 'probes'], fieldType) && fields.length > 2 ||
+	fieldType === 'geneProbes';
+
+function reOrderFields(column, data) {
+	var probeOrder = _.getIn(data, ['clustering', 'probes']);
+	if (supportsClustering(column) && column.clustering === 'probes' &&
+			data.status !== 'loading' && probeOrder && data.req) {
+		return {
+			data: _.updateIn(data, ['req'], req => {
+					var {mean, position, probes, values} = req;
+					return _.merge(req,
+						mean ? {mean: probeOrder.map(i => mean[i])} : {},
+						position ? {position: probeOrder.map(i => position[i])} : {},
+						probes ? {probes: probeOrder.map(i => probes[i])} : {},
+						values ? {values: probeOrder.map(i => values[i])} : {});
+				}),
+			column: column.fieldType === 'geneProbes' ? column :
+				_.assoc(column, 'fields', probeOrder.map(i => column.fields[i]))
+		};
+	}
+	return {column, data};
+}
+
+var reorderFieldsTransform = fn =>
+	(column0, vizSettings, data0, samples) =>
+		_.Let(({column, data} = reOrderFields(column0, data0)) =>
+			 fn(column, vizSettings, data, samples));
 
 function dataToHeatmap(column, vizSettings, data, samples) {
 	if (!_.get(data, 'req')) {
@@ -102,6 +131,42 @@ function dataToHeatmap(column, vizSettings, data, samples) {
 	// in the rendering layer, to determine if we support KM and gene average.
 	// We could compute this in a selector, perhaps.
 	return {fields, fieldList: column.fields, heatmap, assembly, colors, units};
+}
+
+function geneProbesToHeatmap(column, vizSettings, data, samples) {
+	var pos = parsePos(column.fields[0]);
+	if (_.isEmpty(data) || _.isEmpty(data.req) || !data.refGene) {
+		return null;
+	}
+	if (!pos && _.isEmpty(data.refGene)) {
+		// got refGene, but it's empty.
+		return dataToHeatmap(column, vizSettings, data, samples);
+	}
+	var {req} = data,
+		refGeneObj = _.first(_.values(data.refGene)),
+		maxXZoom = defaultXZoom(pos, refGeneObj, req.position),
+		{width, showIntrons = false, xzoom = maxXZoom} = column,
+		createLayout = pos ? exonLayout.chromLayout : (showIntrons ? exonLayout.intronLayout : exonLayout.layout),
+		// XXX Build layout that includes pxs for introns
+		layout = createLayout(refGeneObj, width, xzoom, pos),
+		// put exons in an index. Look up via layout. What about
+		// probes in introns? We can look them up as the "between" positions
+		// of the layout.
+		probesInView = _.filterIndices(req.position,
+				({chromstart, chromend}) => xzoom.start <= chromend && chromstart <= xzoom.end),
+
+		reqInView = _.updateIn(req,
+				['values'], values => probesInView.map(i => values[i]),
+				['probes'], probes => probesInView.map(i => probes[i]),
+				['mean'], mean => probesInView.map(i => mean[i])),
+		heatmapData = dataToHeatmap(column, vizSettings, {req: reqInView}, samples);
+
+	return {
+		...(probesInView.length ? heatmapData : {}),
+		layout,
+		position: probesInView.map(i => req.position[i]),
+		maxXZoom
+	};
 }
 
 //
@@ -129,6 +194,7 @@ var cmp = ({fields}, {req: {values, probes} = {values, probes}} = {}) =>
 //
 
 // Convert nanstr and compute mean.
+// XXX deprecate this & use avg selector (widgets.avg) instead.
 function meanNanResponse(probes, data) {
 	var values = _.map(data, field => _.map(field, xenaQuery.nanstr)),
 		mean = _.map(data, _.meannull);
@@ -172,9 +238,11 @@ function indexGeneResponse(samples, genes, data) {
 }
 
 function indexFieldResponse(fields, resp) {
-	var [position, data] = resp;
+	var [namePos, data] = resp;
 	return {
-		position,
+		position: namePos &&
+			_.Let(({name, position} = namePos, posMap = _.object(name, position)) =>
+				fields.map(f => posMap[f])),
 		...meanNanResponse(fields, data)
 	};
 }
@@ -182,8 +250,35 @@ function indexFieldResponse(fields, resp) {
 var fetch = ({dsID, fields}, samples) => datasetProbeValues(dsID, samples, fields)
 	.map(resp => ({req: indexFieldResponse(fields, resp)}));
 
-var fetchGeneProbes = ({dsID, fields, strand}, samples) => datasetGeneProbesValues(dsID, samples, fields)
-	.map(resp => ({req: flopIfNegStrand(strand, indexProbeGeneResponse(resp))}));
+var fetchRefGene = (fields, assembly) => {
+	var {name, host} = xenaQuery.refGene[assembly] || {};
+
+	return name ?
+		xenaQuery.refGeneExons(host, name, fields) :
+		Rx.Observable.of(null, Rx.Scheduler.asap);
+};
+
+function fetchChromProbes({dsID, assembly, fields}, samples) {
+	var {name, host} = xenaQuery.refGene[assembly] || {},
+		pos = parsePos(fields[0]);
+	return Rx.Observable.zip(
+			refGeneRange(host, name, pos.chrom, pos.baseStart, pos.baseEnd),
+			datasetChromProbeValues(dsID, samples, pos.chrom, pos.baseStart, pos.baseEnd),
+			(refGene, resp) => ({
+				req: indexProbeGeneResponse(resp),
+				refGene}));
+}
+
+var fetchGeneProbes = ({dsID, fields, assembly}, samples) =>
+	Rx.Observable.zip(
+		fetchRefGene(fields, assembly),
+		datasetGeneProbesValues(dsID, samples, fields),
+		(refGene, resp) => ({
+			req: flopIfNegStrand(_.getIn(refGene, [fields[0], 'strand']), indexProbeGeneResponse(resp)),
+			refGene}));
+
+var fetchGeneOrChromProbes = (field, samples) =>
+	(parsePos(field.fields[0]) ? fetchChromProbes : fetchGeneProbes)(field, samples);
 
 // This should really be fetchCoded. Further, it should only return a single
 // code list, i.e. either a single clinical coded field, or a list of genomic
@@ -239,17 +334,32 @@ function downloadCodedSampleListsJSON({data, samples, sampleFormat}) {
 	};
 }
 
+function denseAverage(column, data) {
+	var values = _.getIn(data, ['req', 'values'], []);
+	return {
+		avg: {
+			mean: values.map(_.meannull),
+			median: values.map(_.medianNull)
+		}
+	};
+}
+
 ['probes', 'geneProbes', 'genes', 'clinical'].forEach(fieldType => {
-	widgets.transform.add(fieldType, dataToHeatmap);
+	widgets.transform.add(fieldType, reorderFieldsTransform(dataToHeatmap));
 	widgets.cmp.add(fieldType, cmp);
 	widgets.download.add(fieldType, download);
 });
+
+['probes', 'geneProbes', 'genes'].forEach(fieldType =>
+	widgets.avg.add(fieldType, denseAverage));
+
+widgets.transform.add('geneProbes', reorderFieldsTransform(geneProbesToHeatmap));
 
 widgets.specialDownload.add('clinical', downloadCodedSampleListsJSON);
 
 module.exports = {
 	fetch,
-	fetchGeneProbes,
+	fetchGeneOrChromProbes,
 	fetchGene,
 	fetchFeature,
 };

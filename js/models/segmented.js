@@ -105,7 +105,7 @@ function findNodes(byPosition, layout, samples) {
 	var matches = new Set(_.flatmap(layout.chrom,
 				([start, end]) => intervalTree.matches(byPosition, {start, end})));
 
-	return Array.from(_.i.map(matches, v => {
+	return Array.from(_.iterable.map(matches, v => {
 		var [xStart, xEnd] = minSize(pxTransformInterval(layout, [v.start, v.end]));
 		return {
 			xStart,
@@ -162,7 +162,7 @@ function dataToDisplay(column, vizSettings, data, sortedSamples, index) {
 
 function index(fieldType, data) {
 	if (!_.get(data, 'req')) {
-		return null;
+		return {bySample: {}};
 	}
 
 	var {req: {rows, samplesInResp}} = data,

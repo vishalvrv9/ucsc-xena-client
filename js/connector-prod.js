@@ -6,7 +6,7 @@ var React = require('react');
 var ReactDOM = require('react-dom');
 var LZ = require('./lz-string');
 var nostate = require('./nostate');
-var urlParams = require('./urlParams');
+import urlParams from './urlParams';
 var {compactState, expandState} = require('./compactData');
 var migrateState = require('./migrateState');
 var {schemaCheckThrow} = require('./schemaCheck');
@@ -57,7 +57,7 @@ function controlRunner(serverBus, controller) {
 //	obs.do(pushState).merge(setState) : obs;
 //
 var dropTransient = state =>
-	_.assoc(state, 'wizard', {}, 'datapages', undefined);
+	_.assoc(state, 'wizard', {}, 'datapages', undefined, 'localStatus', undefined, 'localQueue', undefined, 'import', undefined);
 
 // Serialization
 var stringify = state => LZ.compressToUTF16(JSON.stringify(compactState(dropTransient(state))));
